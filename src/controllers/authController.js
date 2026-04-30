@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const { sql, poolPromise } = require('../config/db');
-const { sendSuccess, sendError } = require('../utils/response');
+const response = require('../response');
 const logger = require('../config/logger');
 
 const sch = process.env.DB_SCHEMA || 'whatsapp';
