@@ -1,7 +1,7 @@
 // src/middleware/auth.js
 const jwt = require('jsonwebtoken');
 const { sql, poolPromise } = require('../config/db'); // poolPromise use karenge
-const { sendError } = require('../utils/response');
+const response = require('../response');
 
 const schema = process.env.DB_SCHEMA || 'whatsapp';
 
