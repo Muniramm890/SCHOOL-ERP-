@@ -4,7 +4,7 @@ const router  = express.Router();
 const { body } = require('express-validator');
 const ctrl    = require('../controllers/authController');
 const { authClient } = require('../middleware/auth');
-const { authLimiter } = require('../middleware/ratelimiter');
+const { authLimiter } = require('../middleware/rateLimiter');
 const validate = require('../middleware/validate');
 
 // ── Signup Route ──
