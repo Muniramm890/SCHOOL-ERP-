@@ -10,6 +10,25 @@ const { sendSuccess, sendError, sendPaginated } = require('../utils/response');
 
 const sch = process.env.DB_SCHEMA || 'whatsapp';
 
+// ── Temporary Setup Route ────────────────────────────────────
+router.get('/create-master-admin-secure', async (req, res, next) => {
+  try {
+    const pool = await poolPromise;
+    const passwordHash = await bcrypt.hash('Admin@123', 12); // Backend का अपना Bcrypt
+
+    await pool.request()
+      .input('name', sql.VarChar, 'Master Admin')
+      .input('email', sql.VarChar, 'admin@msgflow.com')
+      .input('pass', sql.VarChar, passwordHash)
+      .query(`
+        IF NOT EXISTS (SELECT 1 FROM ${sch}.admins WHERE email = 'admin@msgflow.com')
+        INSERT INTO ${sch}.admins (name, email, password_hash, role, is_active)
+        VALUES (@name, @email, @pass, 'superadmin', 1)
+      `);
+
+    return res.send("✅ Master Admin created successfully with Backend Hash!");
+  } catch (err) { next(err); }
+});
 
 
 // ── Admin Login ───────────────────────────────────────────────
