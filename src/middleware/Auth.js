@@ -119,7 +119,7 @@ const authAdmin = async (req, res, next) => {
     const pool = await poolPromise;
     const result = await pool.request()
       .input('id', sql.Int, decoded.id)
-      .query(`SELECT id, role, is_active FROM ${schema}.wa_admins WHERE id = @id`);
+      .query(`SELECT id, role, is_active FROM ${schema}.admins WHERE id = @id`);
 
     const admin = result.recordset[0];
 
