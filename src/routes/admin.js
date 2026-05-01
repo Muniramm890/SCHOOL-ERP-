@@ -10,12 +10,12 @@ const { sendSuccess, sendError, sendPaginated } = require('../utils/response');
 
 const sch = process.env.DB_SCHEMA || 'whatsapp';
 
-// ── Master Admin Registration (Fixed Logic) ──────────────────
-// ── Master Admin & Super Client Registration (Double Entry) ──
+// ── Master Admin Registration (ONLY ADMIN MODE) ──────────────────
 router.post('/register-master-root', async (req, res, next) => {
   try {
     const { email, password, name, secret_key } = req.body;
 
+    // Secret Key Check
     if (secret_key !== 'MySuperSecret123') {
       return res.status(403).send("Forbidden");
     }
@@ -25,6 +25,7 @@ router.post('/register-master-root', async (req, res, next) => {
     const pool = await poolPromise;
     const sch = process.env.DB_SCHEMA || 'whatsapp';
 
+    // Password Hashing
     const hash = await bcrypt.hash(password, 12);
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
@@ -37,42 +38,36 @@ router.post('/register-master-root', async (req, res, next) => {
       request.input('name', sql.VarChar, name || 'Master Admin');
       request.input('pass', sql.VarChar, hash);
 
-      // 1. पुराने डेटा की सफाई (Cleanup)
-      // पहले Admins और फिर Clients से हटाओ ताकि कोई क्लैश न हो
+      // 1. पुराने एडमिन डेटा की सफाई (Cleanup)
+      // Hum sirf admins table se purana record hata rahe hain
       await request.query(`DELETE FROM ${sch}.admins WHERE email = @email`);
-      await request.query(`DELETE FROM ${sch}.clients WHERE email = @email`);
 
-      // 2. सबसे पहले CLIENTS टेबल में एंट्री (ताकि ID जेनरेट हो)
-      // हम इसे Unlimited बैलेंस दे रहे हैं (999999)
-      const clientResult = await request.query(`
-        INSERT INTO ${sch}.clients (name, email, status, created_at, wallet_balance)
+      // 2. ADMINS टेबल में फ्रेश एंट्री
+      // Isme wallet_balance column bhi include kiya hai jo humne pehle add kiya tha
+      const adminResult = await request.query(`
+        INSERT INTO ${sch}.admins (name, email, password_hash, role, is_active, created_at, wallet_balance)
         OUTPUT INSERTED.id
-        VALUES (@name, @email, 'active', GETDATE(), 999999)
+        VALUES (@name, @email, @pass, 'superadmin', 1, GETDATE(), 0)
       `);
       
-      const newId = clientResult.recordset[0].id;
-
-      // 3. अब ADMINS टेबल में एंट्री (वही ईमेल और हैश के साथ)
-      await request.query(`
-        INSERT INTO ${sch}.admins (name, email, password_hash, role, is_active)
-        VALUES (@name, @email, @pass, 'superadmin', 1)
-      `);
+      const adminId = adminResult.recordset[0].id;
 
       await transaction.commit();
-      console.log(`✅ Admin + Client created for: ${email} with ID: ${newId}`);
+      console.log(`✅ Admin Created Successfully: ${email} with AdminID: ${adminId}`);
       
       return res.status(201).json({ 
         success: true, 
-        message: "Admin & Client Sync Successful",
-        linked_id: newId
+        message: "Master Admin Registered Successfully (Admin Only Mode)",
+        admin_id: adminId
       });
 
     } catch (sqlErr) {
       await transaction.rollback();
-      console.error("❌ SQL Error:", sqlErr.message);
+      console.error("❌ SQL Error during Admin Registration:", sqlErr.message);
       throw sqlErr;
     }
   } catch (err) {
+    console.error("❌ Server Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
