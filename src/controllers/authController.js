@@ -15,50 +15,47 @@ const sch = process.env.DB_SCHEMA || 'whatsapp';
 // Ab niche ka saara signup/login logic sahi chalega
 
 // ── SIGNUP ────────────────────────────────────────────────────
+// src/controllers/authController.js -> signup function replace karein
+
 const signup = async (req, res, next) => {
   try {
     const { name, email, password, phone, company_name } = req.body;
     const pool = await poolPromise;
 
-    // Check duplicate email
+    // 1. Check duplicate email (Strictly trim and lowercase)
+    const cleanEmail = email.trim().toLowerCase();
     const existing = await pool.request()
-      .input('email', sql.VarChar, email)
+      .input('email', sql.VarChar, cleanEmail)
       .query(`SELECT id FROM ${sch}.clients WHERE email = @email`);
 
-    if (existing.recordset.length) return sendError(res, 409, 'Email already registered');
+    if (existing.recordset.length) {
+       return sendError(res, 409, 'Email already registered. Please Login.');
+    }
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    // Azure SQL: Get new ID using OUTPUT inserted.id
-    // src/controllers/authController.js -> signup function mein ye badlo:
-
-const result = await pool.request()
-  .input('name', sql.VarChar, name)
-  .input('email', sql.VarChar, email)
-  .input('pass', sql.VarChar, passwordHash)
-  .input('phone', sql.VarChar, phone || null)
-  .input('company', sql.VarChar, company_name || null)
-  .query(`
-    INSERT INTO ${sch}.clients (name, email, password_hash, phone, company_name, status, email_verified)
-    OUTPUT inserted.id
-    VALUES (@name, @email, @pass, @phone, @company, 'active', 1) -- 💡 Direct Active & Verified
-  `);
+    // 2. Direct INSERT with ACTIVE status and VERIFIED flag
+    const result = await pool.request()
+      .input('name', sql.VarChar, name)
+      .input('email', sql.VarChar, cleanEmail)
+      .input('pass', sql.VarChar, passwordHash)
+      .input('phone', sql.VarChar, phone || null)
+      .input('company', sql.VarChar, company_name || null)
+      .query(`
+        INSERT INTO ${sch}.clients (name, email, password_hash, phone, company_name, status, email_verified, created_at)
+        OUTPUT inserted.id
+        VALUES (@name, @email, @pass, @phone, @company, 'active', 1, GETDATE())
+      `);
 
     const clientId = result.recordset[0].id;
 
-    // Create email verification token (DATEADD used for MSSQL)
-    const token = uuidv4();
-    await pool.request()
-      .input('cid', sql.Int, clientId)
-      .input('token', sql.VarChar, token)
-      .query(`
-        INSERT INTO ${sch}.client_tokens (client_id, token, type, expires_at)
-        VALUES (@cid, @token, 'email_verify', DATEADD(hour, 24, GETDATE()))
-      `);
-
-    logger.info(`New client signup: ${email} (id: ${clientId})`);
-    return sendSuccess(res, { clientId }, 'Account created. Please verify your email.', 201);
+    // 💡 Development bypass: Tokens ki zaroorat nahi jab auto-verify kar rahe hon
+    logger.info(`✅ New Client Auto-Verified: ${cleanEmail} (id: ${clientId})`);
+    
+    return sendSuccess(res, { clientId }, 'Account created successfully! You can now login.', 201);
+    
   } catch (err) {
+    console.error("🔥 Signup Crash:", err.message);
     next(err);
   }
 };
