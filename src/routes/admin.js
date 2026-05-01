@@ -10,42 +10,35 @@ const { sendSuccess, sendError, sendPaginated } = require('../utils/response');
 
 const sch = process.env.DB_SCHEMA || 'whatsapp';
 
-// ── Master Admin Registration (Fixed to Match Login Library) ──────────────────
+// ── Master Admin Registration (Fixed Logic) ──────────────────
 router.post('/register-master-root', async (req, res, next) => {
   try {
     const { email, password, name, secret_key } = req.body;
 
-    // Secret Key Check
     if (secret_key !== 'MySuperSecret123') {
       return res.status(403).send("Forbidden");
     }
 
-    // Yahan hum wahi 'bcrypt' use kar rahe hain jo top par 'require('bcryptjs')' se aaya hai
     const pool = await poolPromise;
     const schema = process.env.DB_SCHEMA || 'whatsapp';
 
-    // 💡 EXACT SAME HASHING AS LOGIN LOGIC
-    // Hum rounds ko 12 rakh rahe hain, jo standard hai
+    // 💡 FIX: Salt aur Hash generate karte waqt rounds ko exact match rakhein
     const salt = await bcrypt.genSalt(12);
-    const hash = await bcrypt.hash(password, salt);
+    const hash = await bcrypt.hash(password.trim(), salt); // Input password ko bhi trim karein
 
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
 
     try {
       const request = new sql.Request(transaction);
-      
-      // Email ko trim kar rahe hain consistency ke liye
       const cleanEmail = email ? email.trim() : "";
 
       request.input('email', sql.VarChar, cleanEmail);
       request.input('name', sql.VarChar, name || 'Master Admin');
-      request.input('pass', sql.VarChar, hash);
+      request.input('pass', sql.VarChar, hash.trim()); // Hash ko bhi trim karke bhejien
 
-      // 1. Purana data saaf karein
       await request.query(`DELETE FROM ${schema}.admins WHERE email = @email`);
 
-      // 2. Fresh Admin Insert (Admin Only Mode)
       const adminResult = await request.query(`
         INSERT INTO ${schema}.admins (name, email, password_hash, role, is_active, created_at, wallet_balance)
         OUTPUT INSERTED.id
@@ -53,22 +46,16 @@ router.post('/register-master-root', async (req, res, next) => {
       `);
       
       const adminId = adminResult.recordset[0].id;
-
       await transaction.commit();
-      console.log(`✅ Admin Created with Exact Hashing: ${cleanEmail} (ID: ${adminId})`);
       
-      return res.status(201).json({ 
-        success: true, 
-        message: "Master Admin Registered with Sync Hashing",
-        admin_id: adminId
-      });
+      console.log(`✅ Admin Created: ${cleanEmail} (ID: ${adminId})`);
+      return res.status(201).json({ success: true, admin_id: adminId });
 
     } catch (sqlErr) {
       if (transaction) await transaction.rollback();
       throw sqlErr;
     }
   } catch (err) {
-    console.error("❌ Registration Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
