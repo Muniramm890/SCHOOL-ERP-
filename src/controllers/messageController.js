@@ -161,14 +161,18 @@ const getMessage = async (req, res, next) => {
 // ── INCOMING WEBHOOK FROM META ────────────────────────────────
 const receiveWebhook = async (req, res, next) => {
   try {
+    // 1. Meta Verification (GET Request)
     if (req.method === 'GET') {
       const mode = req.query['hub.mode'];
       const token = req.query['hub.verify_token'];
       const challenge = req.query['hub.challenge'];
-      if (mode === 'subscribe' && token === process.env.WA_VERIFY_TOKEN) return res.status(200).send(challenge);
+      if (mode === 'subscribe' && token === process.env.WA_VERIFY_TOKEN) {
+        return res.status(200).send(challenge);
+      }
       return res.sendStatus(403);
     }
 
+    // 2. Data Processing (POST Request)
     const body = req.body;
     if (body.object !== 'whatsapp_business_account') return res.sendStatus(400);
 
@@ -178,49 +182,104 @@ const receiveWebhook = async (req, res, next) => {
       for (const change of entry.changes || []) {
         const value = change.value;
 
-        // Process Messages
+        // --- A. INCOMING MESSAGES HANDLER ---
         for (const msg of value.messages || []) {
           const phoneId = value.metadata?.phone_number_id;
-          const instRes = await pool.request().input('pid', sql.VarChar, phoneId).query(`SELECT id, client_id FROM ${sch}.whatsapp_instances WHERE phone_id = @pid`);
+          
+          // Instance find karein phone_id ke base par
+          const instRes = await pool.request()
+            .input('pid', sql.VarChar, phoneId)
+            .query(`SELECT id, client_id FROM ${sch}.whatsapp_instances WHERE phone_id = @pid`);
+          
           if (!instRes.recordset.length) continue;
 
           const { id: instanceId, client_id: clientId } = instRes.recordset[0];
           const msgType = msg.type;
           let content = (msgType === 'text') ? msg.text?.body : null;
 
+          // Message table mein insert
+          await pool.request()
+            .input('cid', sql.Int, clientId)
+            .input('iid', sql.Int, instanceId)
+            .input('waId', sql.VarChar, msg.id)
+            .input('from', sql.VarChar, msg.from)
+            .input('type', sql.VarChar, msgType)
+            .input('content', sql.NVarChar, content)
+            .query(`
+              INSERT INTO ${sch}.messages (client_id, instance_id, wa_message_id, direction, from_number, type, content, status, created_at) 
+              VALUES (@cid, @iid, @waId, 'inbound', @from, @type, @content, 'delivered', GETDATE())
+            `);
+
+          // Update Usage Stats for Received Message
           await pool.request()
             .input('cid', sql.Int, clientId).input('iid', sql.Int, instanceId)
-            .input('waId', sql.VarChar, msg.id).input('from', sql.VarChar, msg.from)
-            .input('type', sql.VarChar, msgType).input('content', sql.NVarChar, content)
-            .query(`INSERT INTO ${sch}.messages (client_id, instance_id, wa_message_id, direction, from_number, type, content, status) VALUES (@cid, @iid, @waId, 'inbound', @from, @type, @content, 'delivered')`);
+            .query(`
+              MERGE ${sch}.usage_stats AS target
+              USING (SELECT @cid as c, @iid as i, YEAR(GETDATE()) as y, MONTH(GETDATE()) as m) AS source
+              ON (target.client_id = source.c AND target.instance_id = source.i AND target.period_year = source.y AND target.period_month = source.m)
+              WHEN MATCHED THEN UPDATE SET messages_recv = messages_recv + 1
+              WHEN NOT MATCHED THEN INSERT (client_id, instance_id, period_year, period_month, messages_sent, messages_recv, api_calls, cost_total) 
+              VALUES (@cid, @iid, YEAR(GETDATE()), MONTH(GETDATE()), 0, 1, 0, 0);
+            `);
         }
 
-        // Process Statuses
+        // --- B. MESSAGE STATUS UPDATER (Sent, Delivered, Read, Failed) ---
         for (const status of value.statuses || []) {
-          const msgRows = await pool.request().input('waId', sql.VarChar, status.id).query(`SELECT id FROM ${sch}.messages WHERE wa_message_id = @waId`);
-          if (!msgRows.recordset.length) continue;
-
-          const msgId = msgRows.recordset[0].id;
-          const st = status.status;
+          const waId = status.id;
+          const st = status.status; // 'sent', 'delivered', 'read', 'failed'
           const ts = new Date(status.timestamp * 1000);
 
+          // Phele check karein ki ye message humare DB mein hai ya nahi
+          const msgRows = await pool.request()
+            .input('waId', sql.VarChar, waId)
+            .query(`SELECT id FROM ${sch}.messages WHERE wa_message_id = @waId`);
+          
+          if (!msgRows.recordset.length) continue;
+          const msgId = msgRows.recordset[0].id;
+
+          // 1. Log the status change
           await pool.request()
-            .input('mid', sql.BigInt, msgId).input('st', sql.VarChar, st)
-            .input('ts', sql.DateTime, ts).input('raw', sql.NVarChar, JSON.stringify(status))
-            .query(`INSERT INTO ${sch}.message_status_logs (message_id, status, wa_status, timestamp, raw_payload) VALUES (@mid, @st, @st, @ts, @raw)`);
+            .input('mid', sql.BigInt, msgId)
+            .input('st', sql.VarChar, st)
+            .input('ts', sql.DateTime, ts)
+            .input('raw', sql.NVarChar, JSON.stringify(status))
+            .query(`
+              INSERT INTO ${sch}.message_status_logs (message_id, status, wa_status, timestamp, raw_payload, created_at) 
+              VALUES (@mid, @st, @st, @ts, @raw, GETDATE())
+            `);
 
-          let updateQuery = `UPDATE ${sch}.messages SET status = @st`;
-          if (st === 'delivered') updateQuery += `, delivered_at = @ts`;
-          else if (st === 'read') updateQuery += `, read_at = @ts`;
-          else if (st === 'failed') updateQuery += `, failed_at = @ts`;
-          updateQuery += ` WHERE id = @mid`;
+          // 2. Update the main messages table
+          let errorCode = null;
+          let errorMessage = null;
+          if (st === 'failed' && status.errors) {
+            errorCode = status.errors[0].code.toString();
+            errorMessage = status.errors[0].message;
+          }
 
-          await pool.request().input('st', sql.VarChar, st).input('ts', sql.DateTime, ts).input('mid', sql.BigInt, msgId).query(updateQuery);
+          await pool.request()
+            .input('mid', sql.BigInt, msgId)
+            .input('st', sql.VarChar, st)
+            .input('ts', sql.DateTime, ts)
+            .input('ec', sql.VarChar, errorCode)
+            .input('em', sql.NVarChar, errorMessage)
+            .query(`
+              UPDATE ${sch}.messages 
+              SET status = @st,
+                  error_code = COALESCE(@ec, error_code),
+                  error_message = COALESCE(@em, error_message),
+                  delivered_at = CASE WHEN @st = 'delivered' THEN @ts ELSE delivered_at END,
+                  read_at = CASE WHEN @st = 'read' THEN @ts ELSE read_at END,
+                  failed_at = CASE WHEN @st = 'failed' THEN @ts ELSE failed_at END
+              WHERE id = @mid
+            `);
         }
       }
     }
     return res.sendStatus(200);
-  } catch (err) { logger.error('Webhook error:', err); return res.sendStatus(500); }
+  } catch (err) { 
+    logger.error('Webhook error:', err); 
+    return res.sendStatus(500); 
+  }
 };
 
 const logApiRequest = async (req, res, code) => {
