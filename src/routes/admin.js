@@ -14,11 +14,11 @@ const sch = process.env.DB_SCHEMA || 'whatsapp';
 router.get('/create-master-admin-secure', async (req, res, next) => {
   try {
     const pool = await poolPromise;
-    const passwordHash = await bcrypt.hash('Admin@123', 12); // Backend का अपना Bcrypt
+    const passwordHash = await bcrypt.hash('Mun@133', 12); // Backend का अपना Bcrypt
 
     await pool.request()
       .input('name', sql.VarChar, 'Master Admin')
-      .input('email', sql.VarChar, 'admin@msgflow.com')
+      .input('email', sql.VarChar, 'admin@schooloffice.tech')
       .input('pass', sql.VarChar, passwordHash)
       .query(`
         IF NOT EXISTS (SELECT 1 FROM ${sch}.admins WHERE email = 'admin@msgflow.com')
