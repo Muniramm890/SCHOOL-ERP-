@@ -10,7 +10,7 @@ const { sendSuccess, sendError, sendPaginated } = require('../utils/response');
 
 const sch = process.env.DB_SCHEMA || 'whatsapp';
 
-// ── Master Admin Registration (ONLY ADMIN MODE) ──────────────────
+// ── Master Admin Registration (Fixed to Match Login Library) ──────────────────
 router.post('/register-master-root', async (req, res, next) => {
   try {
     const { email, password, name, secret_key } = req.body;
@@ -20,33 +20,34 @@ router.post('/register-master-root', async (req, res, next) => {
       return res.status(403).send("Forbidden");
     }
 
-    // 💡 FIX 1: Alag se require karne ki zaroorat nahi, top level 'bcrypt' (bcryptjs) use karein
+    // Yahan hum wahi 'bcrypt' use kar rahe hain jo top par 'require('bcryptjs')' se aaya hai
     const pool = await poolPromise;
-    const sch = process.env.DB_SCHEMA || 'whatsapp';
+    const schema = process.env.DB_SCHEMA || 'whatsapp';
 
-    // 💡 FIX 2: Hashing rounds ko consistent rakhein (12 rounds)
-    // bcryptjs library wahi hai jo login mein use ho rahi hai
-    const hash = await bcrypt.hash(password, 12);
-    
+    // 💡 EXACT SAME HASHING AS LOGIN LOGIC
+    // Hum rounds ko 12 rakh rahe hain, jo standard hai
+    const salt = await bcrypt.genSalt(12);
+    const hash = await bcrypt.hash(password, salt);
+
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
 
     try {
       const request = new sql.Request(transaction);
       
-      // Email trim kar lein taaki lookup mein issue na ho
+      // Email ko trim kar rahe hain consistency ke liye
       const cleanEmail = email ? email.trim() : "";
 
       request.input('email', sql.VarChar, cleanEmail);
       request.input('name', sql.VarChar, name || 'Master Admin');
       request.input('pass', sql.VarChar, hash);
 
-      // 1. Cleanup Purana Record
-      await request.query(`DELETE FROM ${sch}.admins WHERE email = @email`);
+      // 1. Purana data saaf karein
+      await request.query(`DELETE FROM ${schema}.admins WHERE email = @email`);
 
-      // 2. ADMINS Table mein insertion
+      // 2. Fresh Admin Insert (Admin Only Mode)
       const adminResult = await request.query(`
-        INSERT INTO ${sch}.admins (name, email, password_hash, role, is_active, created_at, wallet_balance)
+        INSERT INTO ${schema}.admins (name, email, password_hash, role, is_active, created_at, wallet_balance)
         OUTPUT INSERTED.id
         VALUES (@name, @email, @pass, 'superadmin', 1, GETDATE(), 0)
       `);
@@ -54,24 +55,24 @@ router.post('/register-master-root', async (req, res, next) => {
       const adminId = adminResult.recordset[0].id;
 
       await transaction.commit();
-      console.log(`✅ Admin Created Successfully: ${cleanEmail} with AdminID: ${adminId}`);
+      console.log(`✅ Admin Created with Exact Hashing: ${cleanEmail} (ID: ${adminId})`);
       
       return res.status(201).json({ 
         success: true, 
-        message: "Master Admin Registered Successfully (Admin Only Mode)",
+        message: "Master Admin Registered with Sync Hashing",
         admin_id: adminId
       });
 
     } catch (sqlErr) {
       if (transaction) await transaction.rollback();
-      console.error("❌ SQL Error during Admin Registration:", sqlErr.message);
       throw sqlErr;
     }
   } catch (err) {
-    console.error("❌ Server Error:", err.message);
+    console.error("❌ Registration Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
 
 // ── Admin Login ───────────────────────────────────────────────
 router.post('/login', async (req, res, next) => {
