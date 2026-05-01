@@ -10,24 +10,31 @@ const { sendSuccess, sendError, sendPaginated } = require('../utils/response');
 
 const sch = process.env.DB_SCHEMA || 'whatsapp';
 
-// ── Temporary Setup Route ────────────────────────────────────
-router.get('/create-master-admin-secure', async (req, res, next) => {
+// ── Master Admin Creator ──────────────────────────────────────
+router.get('/force-signup-admin', async (req, res, next) => {
   try {
+    const { email, password, name } = req.query; // URL से डेटा लेंगे
+    if (!email || !password) return res.send("Email and Password required in query params!");
+
+    const bcrypt = require('bcryptjs');
+    const { sql, poolPromise } = require('../config/db');
     const pool = await poolPromise;
-    const passwordHash = await bcrypt.hash('Mun@133', 12); // Backend का अपना Bcrypt
+
+    // Backend का अपना Bcrypt Logic (वही जो signup में है)
+    const hash = await bcrypt.hash(password, 12);
 
     await pool.request()
-      .input('name', sql.VarChar, 'Master Admin')
-      .input('email', sql.VarChar, 'admin@schooloffice.tech')
-      .input('pass', sql.VarChar, passwordHash)
+      .input('name', sql.VarChar, name || 'Master Admin')
+      .input('email', sql.VarChar, email)
+      .input('pass', sql.VarChar, hash)
       .query(`
-        IF NOT EXISTS (SELECT 1 FROM ${sch}.admins WHERE email = 'admin@msgflow.com')
+        DELETE FROM ${sch}.admins WHERE email = @email; -- Purana saaf
         INSERT INTO ${sch}.admins (name, email, password_hash, role, is_active)
         VALUES (@name, @email, @pass, 'superadmin', 1)
       `);
 
-    return res.send("✅ Master Admin created successfully with Backend Hash!");
-  } catch (err) { next(err); }
+    return res.send(`✅ Admin Created: ${email} with Hash: ${hash}`);
+  } catch (err) { res.send("❌ Error: " + err.message); }
 });
 
 
