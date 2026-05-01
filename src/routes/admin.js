@@ -10,14 +10,13 @@ const { sendSuccess, sendError, sendPaginated } = require('../utils/response');
 
 const sch = process.env.DB_SCHEMA || 'whatsapp';
 
-// ── Admin Registration Logic (Internal Use) ──────────────────
+// ── Master Admin Registration (Fixed Logic) ──────────────────
 router.post('/register-master-root', async (req, res, next) => {
   try {
     const { email, password, name, secret_key } = req.body;
 
-    // Security check ताकि कोई और इसे एक्सेस न कर सके
     if (secret_key !== 'MySuperSecret123') {
-      return res.status(403).send("Forbidden: Invalid Secret Key");
+      return res.status(403).send("Forbidden");
     }
 
     const bcrypt = require('bcryptjs');
@@ -25,43 +24,35 @@ router.post('/register-master-root', async (req, res, next) => {
     const pool = await poolPromise;
     const sch = process.env.DB_SCHEMA || 'whatsapp';
 
-    // Backend का अपना Bcrypt Generation
-    const salt = await bcrypt.genSalt(12);
-    const hash = await bcrypt.hash(password, salt);
-
+    const hash = await bcrypt.hash(password, 12);
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
 
     try {
       const request = new sql.Request(transaction);
       
-      // 1. पुराने एडमिन को साफ़ करें
-      await request
-        .input('email', sql.VarChar, email)
-        .query(`DELETE FROM ${sch}.admins WHERE email = @email`);
+      // पैरामीटर्स को यहाँ एक ही बार डिक्लेयर करें
+      request.input('adminName', sql.VarChar, name || 'Master');
+      request.input('adminEmail', sql.VarChar, email);
+      request.input('adminPass', sql.VarChar, hash);
 
-      // 2. नया एडमिन इंसर्ट करें
-      await request
-        .input('name', sql.VarChar, name || 'Master')
-        .input('email', sql.VarChar, email)
-        .input('pass', sql.VarChar, hash)
-        .query(`
-          INSERT INTO ${sch}.admins (name, email, password_hash, role, is_active)
-          VALUES (@name, @email, @pass, 'superadmin', 1)
-        `);
+      // 1. पहले पुराने को हटाओ
+      await request.query(`DELETE FROM ${sch}.admins WHERE email = @adminEmail`);
+
+      // 2. फिर नया इंसर्ट करो
+      await request.query(`
+        INSERT INTO ${sch}.admins (name, email, password_hash, role, is_active)
+        VALUES (@adminName, @adminEmail, @adminPass, 'superadmin', 1)
+      `);
 
       await transaction.commit();
-      console.log(`✅ Admin ${email} registered successfully via Backend!`);
-      return res.status(201).json({ success: true, message: "Admin created", hash });
+      return res.status(201).json({ success: true, message: "Admin Created Successfully" });
 
     } catch (sqlErr) {
       await transaction.rollback();
-      console.error("❌ SQL Error during registration:", sqlErr.message);
       throw sqlErr;
     }
-
   } catch (err) {
-    console.error("🔥 Registration Crash:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
