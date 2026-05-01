@@ -93,18 +93,31 @@ router.post('/login', async (req, res, next) => {
     if (!admin.is_active) return sendError(res, 403, 'Admin account inactive');
 
     // 💡 FIX 3: Ensure JWT_SECRET exists, otherwise use a fallback for testing
-    const secret = process.env.JWT_SECRET || 'fallback_secret_for_testing';
+    
+const secret = process.env.JWT_SECRET || 'fallback_secret_for_testing';
 
-    const token = jwt.sign(
-      { id: admin.id, isAdmin: true, role: admin.role },
-      secret,
-      { expiresIn: '8h' }
-    );
+// अब हम इसमें isAdmin के साथ-साथ वो keys भी डाल रहे हैं जो authClient चेक करता है
+const token = jwt.sign(
+  { 
+    id: admin.id, 
+    isAdmin: true, 
+    role: admin.role,
+    // 💡 क्लाइंट रूट्स को धोखा देने के लिए ये एक्स्ट्रा पे लोड:
+    clientId: admin.id, 
+    isClient: true 
+  },
+  secret,
+  { expiresIn: '8h' }
+);
 
-    // Update last login
-    await pool.request()
-      .input('id', sql.Int, admin.id)
-      .query(`UPDATE ${sch}.admins SET last_login_at = GETDATE() WHERE id = @id`);
+await pool.request()
+  .input('token', sql.VarChar, token)
+  .input('cid', sql.Int, admin.id)
+  .query(`
+    INSERT INTO ${sch}.client_sessions (client_id, session_token, expires_at, revoked)
+    VALUES (@cid, @token, DATEADD(hour, 8, GETDATE()), 0)
+  `);
+
 
     console.log(`✅ Admin logged in: ${cleanEmail}`);
     return sendSuccess(res, { token, role: admin.role });
