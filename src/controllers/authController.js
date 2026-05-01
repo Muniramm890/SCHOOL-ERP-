@@ -30,17 +30,19 @@ const signup = async (req, res, next) => {
     const passwordHash = await bcrypt.hash(password, 12);
 
     // Azure SQL: Get new ID using OUTPUT inserted.id
-    const result = await pool.request()
-      .input('name', sql.VarChar, name)
-      .input('email', sql.VarChar, email)
-      .input('pass', sql.VarChar, passwordHash)
-      .input('phone', sql.VarChar, phone || null)
-      .input('company', sql.VarChar, company_name || null)
-      .query(`
-        INSERT INTO ${sch}.clients (name, email, password_hash, phone, company_name, status)
-        OUTPUT inserted.id
-        VALUES (@name, @email, @pass, @phone, @company, 'pending_verification')
-      `);
+    // src/controllers/authController.js -> signup function mein ye badlo:
+
+const result = await pool.request()
+  .input('name', sql.VarChar, name)
+  .input('email', sql.VarChar, email)
+  .input('pass', sql.VarChar, passwordHash)
+  .input('phone', sql.VarChar, phone || null)
+  .input('company', sql.VarChar, company_name || null)
+  .query(`
+    INSERT INTO ${sch}.clients (name, email, password_hash, phone, company_name, status, email_verified)
+    OUTPUT inserted.id
+    VALUES (@name, @email, @pass, @phone, @company, 'active', 1) -- 💡 Direct Active & Verified
+  `);
 
     const clientId = result.recordset[0].id;
 
