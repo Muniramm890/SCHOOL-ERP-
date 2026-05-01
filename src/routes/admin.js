@@ -13,7 +13,7 @@ const sch = process.env.DB_SCHEMA || 'whatsapp';
 
 
 // ── Admin Login ───────────────────────────────────────────────
-router.post('/login', authLimiter, async (req, res, next) => {
+router.post('/login', async (req, res, next) => {
   try {
     const { email, password } = req.body;
     const pool = await poolPromise;
