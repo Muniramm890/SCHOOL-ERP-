@@ -11,6 +11,7 @@ const { sendSuccess, sendError, sendPaginated } = require('../utils/response');
 const sch = process.env.DB_SCHEMA || 'whatsapp';
 
 // ── Master Admin Registration (Fixed Logic) ──────────────────
+// ── Master Admin & Super Client Registration (Double Entry) ──
 router.post('/register-master-root', async (req, res, next) => {
   try {
     const { email, password, name, secret_key } = req.body;
@@ -31,25 +32,44 @@ router.post('/register-master-root', async (req, res, next) => {
     try {
       const request = new sql.Request(transaction);
       
-      // पैरामीटर्स को यहाँ एक ही बार डिक्लेयर करें
-      request.input('adminName', sql.VarChar, name || 'Master');
-      request.input('adminEmail', sql.VarChar, email);
-      request.input('adminPass', sql.VarChar, hash);
+      // पैरामीटर्स डिक्लेयर करें
+      request.input('email', sql.VarChar, email);
+      request.input('name', sql.VarChar, name || 'Master Admin');
+      request.input('pass', sql.VarChar, hash);
 
-      // 1. पहले पुराने को हटाओ
-      await request.query(`DELETE FROM ${sch}.admins WHERE email = @adminEmail`);
+      // 1. पुराने डेटा की सफाई (Cleanup)
+      // पहले Admins और फिर Clients से हटाओ ताकि कोई क्लैश न हो
+      await request.query(`DELETE FROM ${sch}.admins WHERE email = @email`);
+      await request.query(`DELETE FROM ${sch}.clients WHERE email = @email`);
 
-      // 2. फिर नया इंसर्ट करो
+      // 2. सबसे पहले CLIENTS टेबल में एंट्री (ताकि ID जेनरेट हो)
+      // हम इसे Unlimited बैलेंस दे रहे हैं (999999)
+      const clientResult = await request.query(`
+        INSERT INTO ${sch}.clients (name, email, status, created_at, wallet_balance)
+        OUTPUT INSERTED.id
+        VALUES (@name, @email, 'active', GETDATE(), 999999)
+      `);
+      
+      const newId = clientResult.recordset[0].id;
+
+      // 3. अब ADMINS टेबल में एंट्री (वही ईमेल और हैश के साथ)
       await request.query(`
         INSERT INTO ${sch}.admins (name, email, password_hash, role, is_active)
-        VALUES (@adminName, @adminEmail, @adminPass, 'superadmin', 1)
+        VALUES (@name, @email, @pass, 'superadmin', 1)
       `);
 
       await transaction.commit();
-      return res.status(201).json({ success: true, message: "Admin Created Successfully" });
+      console.log(`✅ Admin + Client created for: ${email} with ID: ${newId}`);
+      
+      return res.status(201).json({ 
+        success: true, 
+        message: "Admin & Client Sync Successful",
+        linked_id: newId
+      });
 
     } catch (sqlErr) {
       await transaction.rollback();
+      console.error("❌ SQL Error:", sqlErr.message);
       throw sqlErr;
     }
   } catch (err) {
