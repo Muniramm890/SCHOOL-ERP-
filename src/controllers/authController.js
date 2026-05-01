@@ -1,13 +1,18 @@
 // src/controllers/authController.js
+// src/controllers/authController.js
+
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const { sql, poolPromise } = require('../config/db');
-const response = require('../utils/response'); 
-
 const logger = require('../config/logger');
 
+// 💡 SABSE ZAROORI FIX: Destructure both functions from response utility
+const { sendSuccess, sendError } = require('../utils/response'); 
+
 const sch = process.env.DB_SCHEMA || 'whatsapp';
+
+// Ab niche ka saara signup/login logic sahi chalega
 
 // ── SIGNUP ────────────────────────────────────────────────────
 const signup = async (req, res, next) => {
