@@ -20,30 +20,31 @@ router.post('/register-master-root', async (req, res, next) => {
       return res.status(403).send("Forbidden");
     }
 
-    const bcrypt = require('bcryptjs');
-    const { sql, poolPromise } = require('../config/db');
+    // 💡 FIX 1: Alag se require karne ki zaroorat nahi, top level 'bcrypt' (bcryptjs) use karein
     const pool = await poolPromise;
     const sch = process.env.DB_SCHEMA || 'whatsapp';
 
-    // Password Hashing
+    // 💡 FIX 2: Hashing rounds ko consistent rakhein (12 rounds)
+    // bcryptjs library wahi hai jo login mein use ho rahi hai
     const hash = await bcrypt.hash(password, 12);
+    
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
 
     try {
       const request = new sql.Request(transaction);
       
-      // पैरामीटर्स डिक्लेयर करें
-      request.input('email', sql.VarChar, email);
+      // Email trim kar lein taaki lookup mein issue na ho
+      const cleanEmail = email ? email.trim() : "";
+
+      request.input('email', sql.VarChar, cleanEmail);
       request.input('name', sql.VarChar, name || 'Master Admin');
       request.input('pass', sql.VarChar, hash);
 
-      // 1. पुराने एडमिन डेटा की सफाई (Cleanup)
-      // Hum sirf admins table se purana record hata rahe hain
+      // 1. Cleanup Purana Record
       await request.query(`DELETE FROM ${sch}.admins WHERE email = @email`);
 
-      // 2. ADMINS टेबल में फ्रेश एंट्री
-      // Isme wallet_balance column bhi include kiya hai jo humne pehle add kiya tha
+      // 2. ADMINS Table mein insertion
       const adminResult = await request.query(`
         INSERT INTO ${sch}.admins (name, email, password_hash, role, is_active, created_at, wallet_balance)
         OUTPUT INSERTED.id
@@ -53,7 +54,7 @@ router.post('/register-master-root', async (req, res, next) => {
       const adminId = adminResult.recordset[0].id;
 
       await transaction.commit();
-      console.log(`✅ Admin Created Successfully: ${email} with AdminID: ${adminId}`);
+      console.log(`✅ Admin Created Successfully: ${cleanEmail} with AdminID: ${adminId}`);
       
       return res.status(201).json({ 
         success: true, 
@@ -62,7 +63,7 @@ router.post('/register-master-root', async (req, res, next) => {
       });
 
     } catch (sqlErr) {
-      await transaction.rollback();
+      if (transaction) await transaction.rollback();
       console.error("❌ SQL Error during Admin Registration:", sqlErr.message);
       throw sqlErr;
     }
