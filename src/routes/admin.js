@@ -65,11 +65,15 @@ router.post('/register-master-root', async (req, res, next) => {
 router.post('/login', async (req, res, next) => {
   try {
     const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return sendError(res, 400, 'Email and password are required');
+    }
+
     const pool = await poolPromise;
+    const cleanEmail = email.trim().toLowerCase();
 
-    // Email को trim करें ताकि कोई extra space न रहे
-    const cleanEmail = email ? email.trim() : "";
-
+    // 1. Database se Admin fetch karein
     const result = await pool.request()
       .input('email', sql.VarChar, cleanEmail)
       .query(`SELECT * FROM ${sch}.admins WHERE email = @email`);
@@ -77,58 +81,61 @@ router.post('/login', async (req, res, next) => {
     const admin = result.recordset[0];
     
     if (!admin) {
-      console.log(`❌ Login Fail: Email ${cleanEmail} not found in DB`);
+      console.log(`❌ Login Fail: [${cleanEmail}] not found`);
       return sendError(res, 401, 'Invalid credentials');
     }
 
-    // 💡 FIX 1: Explicitly stringify and trim the hash from DB
-    const dbHash = admin.password_hash.trim();
+    // 2. Password Validation (Bcrypt Proof)
+    // .toString().trim() isliye taaki agar DB mein CHAR type ho toh extra spaces saaf ho jayein
+    const dbHash = admin.password_hash.toString().trim();
+    const valid = await bcrypt.compare(password.trim(), dbHash);
     
-    // 💡 FIX 2: Bcrypt comparison with logging
-    const valid = await bcrypt.compare(password, dbHash);
-    
-    console.log(`🔍 Auth Check for ${cleanEmail}:`, {
-      passwordProvided: password ? "YES" : "NO",
-      hashFound: "YES",
-      isValid: valid
-    });
+    console.log(`🔍 Auth Check for ${cleanEmail}:`, { isValid: valid });
 
     if (!valid) return sendError(res, 401, 'Invalid credentials');
-    if (!admin.is_active) return sendError(res, 403, 'Admin account inactive');
+    if (!admin.is_active) return sendError(res, 403, 'Account inactive');
 
-    // 💡 FIX 3: Ensure JWT_SECRET exists, otherwise use a fallback for testing
-    
-const secret = process.env.JWT_SECRET || 'fallback_secret_for_testing';
+    // 3. JWT Signing
+    const secret = process.env.JWT_SECRET || 'fallback_secret_for_testing';
+    const token = jwt.sign(
+      { 
+        id: admin.id, 
+        isAdmin: true, 
+        role: admin.role,
+        clientId: admin.id, // Payload compatibility ke liye
+        isClient: true 
+      },
+      secret,
+      { expiresIn: '8h' }
+    );
 
-// अब हम इसमें isAdmin के साथ-साथ वो keys भी डाल रहे हैं जो authClient चेक करता है
-const token = jwt.sign(
-  { 
-    id: admin.id, 
-    isAdmin: true, 
-    role: admin.role,
-    // 💡 क्लाइंट रूट्स को धोखा देने के लिए ये एक्स्ट्रा पे लोड:
-    clientId: admin.id, 
-    isClient: true 
-  },
-  secret,
-  { expiresIn: '8h' }
-);
+    // 4. Session Insertion (FK CONFLICT FIX 🚀)
+    // Hum sirf tabhi session table mein insert karenge agar client exist karta hai
+    // Superadmin ke liye hum insertion skip karenge ya conditional insert karenge
+    await pool.request()
+      .input('token', sql.VarChar, token)
+      .input('cid', sql.Int, admin.id)
+      .query(`
+        IF EXISTS (SELECT 1 FROM ${sch}.clients WHERE id = @cid)
+        BEGIN
+          INSERT INTO ${sch}.client_sessions (client_id, session_token, expires_at, revoked, created_at)
+          VALUES (@cid, @token, DATEADD(hour, 8, GETDATE()), 0, GETDATE())
+        END
+        ELSE
+        BEGIN
+          -- Agar admin superadmin hai aur clients table mein nahi hai, 
+          -- toh system ko crash hone se bachane ke liye session insertion skip karein
+          PRINT 'Admin session active: Skipping client_sessions insertion due to FK constraint'
+        END
+      `);
 
-await pool.request()
-  .input('token', sql.VarChar, token)
-  .input('cid', sql.Int, admin.id)
-  .query(`
-    INSERT INTO ${sch}.client_sessions (client_id, session_token, expires_at, revoked)
-    VALUES (@cid, @token, DATEADD(hour, 8, GETDATE()), 0)
-  `);
-
-
-    console.log(`✅ Admin logged in: ${cleanEmail}`);
+    console.log(`✅ Admin logged in successfully: ${cleanEmail}`);
     return sendSuccess(res, { token, role: admin.role });
 
   } catch (err) { 
     console.error("🔥 Login Crash Error:", err.message);
-    next(err); 
+    // User ko generic message bhejein, logs mein full error rakhein
+    return sendError(res, 500, 'Internal Server Error during login');
   }
 });
 
