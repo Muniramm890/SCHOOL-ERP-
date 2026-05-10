@@ -7,11 +7,14 @@ const schema = process.env.DB_SCHEMA || 'whatsapp';
 
 // 1. General API limiter (Standard Middleware)
 const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 200,
+  keyGenerator: (req) => {
+    // Port hata kar sirf clean IP return karein
+    return req.ip.replace(/:\d+$/, ''); 
+  },
   standardHeaders: true,
   legacyHeaders: false,
-  message: { success: false, message: 'Too many requests, please try again later' }
 });
 
 // 2. Auth routes limiter (Prevent Brute Force)
