@@ -293,4 +293,22 @@ const logApiRequest = async (req, res, code) => {
   } catch (_) {}
 };
 
-module.exports = { sendMessage, listMessages, getMessage, receiveWebhook };
+
+// src/controllers/messageController.js mein ye function add karein:
+
+const listTemplates = async (req, res, next) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('clientId', sql.Int, req.clientId)
+      .query(`SELECT * FROM ${sch}.templates WHERE client_id = @clientId OR is_public = 1`);
+    
+    return sendSuccess(res, result.recordset);
+  } catch (err) {
+    next(err);
+  }
+};
+
+
+module.exports = { sendMessage, listMessages, getMessage, receiveWebhook, listTemplates };
+
