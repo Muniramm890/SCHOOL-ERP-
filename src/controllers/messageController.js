@@ -309,6 +309,37 @@ const listTemplates = async (req, res, next) => {
   }
 };
 
-
-module.exports = { sendMessage, listMessages, getMessage, receiveWebhook, listTemplates };
+// Meta Embedded Signup ke data ko save karne ke liye
+const metaOnboarding = async (req, res, next) => {
+  try {
+    const { accessToken, wabaId, phoneId, phone_number } = req.body;
+    const pool = await poolPromise;
+    
+    // Naya instance insert karein ya existing update karein
+    await pool.request()
+      .input('clientId', sql.Int, req.clientId)
+      .input('token', sql.NVarChar, accessToken)
+      .input('waba', sql.VarChar, wabaId)
+      .input('pid', sql.VarChar, phoneId)
+      .input('phone', sql.VarChar, phone_number || 'Pending')
+      .query(`
+        IF EXISTS (SELECT 1 FROM ${sch}.whatsapp_instances WHERE waba_id = @waba AND client_id = @clientId)
+        BEGIN
+          UPDATE ${sch}.whatsapp_instances 
+          SET access_token = @token, phone_id = @pid, status = 'connected'
+          WHERE waba_id = @waba AND client_id = @clientId
+        END
+        ELSE
+        BEGIN
+          INSERT INTO ${sch}.whatsapp_instances (client_id, instance_name, access_token, waba_id, phone_id, status, api_type, phone_number)
+          VALUES (@clientId, 'Meta Connected', @token, @waba, @pid, 'connected', 'cloud', @phone)
+        END
+      `);
+    
+    return sendSuccess(res, {}, 'WhatsApp Business Account Linked Successfully');
+  } catch (err) {
+    next(err);
+  }
+};
+module.exports = { sendMessage, listMessages, getMessage, receiveWebhook, listTemplates, metaOnboarding };
 
