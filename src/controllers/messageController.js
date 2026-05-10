@@ -308,7 +308,7 @@ const listTemplates = async (req, res, next) => {
     const pool = await poolPromise;
     const result = await pool.request()
       .input('clientId', sql.Int, req.clientId)
-      .query(`SELECT * FROM ${sch}.templates WHERE client_id = @clientId OR is_public = 1`);
+      .query(`SELECT * FROM ${sch}.templates WHERE client_id = @clientId OR client_id IS NULL`);
     
     return sendSuccess(res, result.recordset);
   } catch (err) {
