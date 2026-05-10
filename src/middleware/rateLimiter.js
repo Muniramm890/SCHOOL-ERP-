@@ -9,12 +9,11 @@ const schema = process.env.DB_SCHEMA || 'whatsapp';
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 200,
+  validate: { xForwardedForHeader: false }, // Azure ke liye ye zaroori hai
   keyGenerator: (req) => {
-    // Port hata kar sirf clean IP return karein
-    return req.ip.replace(/:\d+$/, ''); 
+    return req.headers['x-forwarded-for'] || req.ip;
   },
-  standardHeaders: true,
-  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests' }
 });
 
 // 2. Auth routes limiter (Prevent Brute Force)
