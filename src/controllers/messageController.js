@@ -144,14 +144,21 @@ const listMessages = async (req, res, next) => {
 const getMessage = async (req, res, next) => {
   try {
     const pool = await poolPromise;
+    // Fix: String ID ko Number mein convert karein SQL crash rokne ke liye
+    const msgId = parseInt(req.params.id);
+    
+    if (isNaN(msgId)) {
+      return sendError(res, 400, 'Invalid Message ID format');
+    }
+
     const result = await pool.request()
-      .input('id', sql.BigInt, req.params.id)
+      .input('id', sql.BigInt, msgId)
       .input('clientId', sql.Int, req.clientId)
       .query(`SELECT m.*, i.instance_name FROM ${sch}.messages m JOIN ${sch}.whatsapp_instances i ON i.id = m.instance_id WHERE m.id = @id AND m.client_id = @clientId`);
 
     if (!result.recordset.length) return sendError(res, 404, 'Message not found');
 
-    const logs = await pool.request().input('mid', sql.BigInt, req.params.id)
+    const logs = await pool.request().input('mid', sql.BigInt, msgId)
       .query(`SELECT status, timestamp, wa_status FROM ${sch}.message_status_logs WHERE message_id = @mid ORDER BY timestamp ASC`);
 
     return sendSuccess(res, { ...result.recordset[0], status_timeline: logs.recordset });
