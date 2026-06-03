@@ -1,50 +1,28 @@
 // src/middleware/errorHandler.js
-const logger = require('../config/logger');
+const logger = require('../utils/logger');
+const { error } = require('../utils/response');
 
 const errorHandler = (err, req, res, next) => {
-  // Log full error detail
-  logger.error({
-    message: err.message,
-    stack:   err.stack,
-    path:    req.path,
-    method:  req.method,
+  logger.error(`${req.method} ${req.originalUrl}`, {
+    error: err.message,
+    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+    user: req.user?.userId,
+    school: req.user?.schoolId,
   });
 
-  /**
-   * Azure SQL (MSSQL) Error Handling
-   * 2627: Unique constraint error (Duplicate)
-   * 2601: Unique index duplicate error
-   * 547: Foreign key constraint error
-   */
-
-  // MSSQL Duplicate Key / Unique Constraint
+  // SQL errors
+  if (err.code === 'EREQUEST' || err.code === 'ECONNREFUSED') {
+    return error(res, 'Database error', 503);
+  }
   if (err.number === 2627 || err.number === 2601) {
-    return res.status(409).json({ 
-      success: false, 
-      message: 'Duplicate entry — resource already exists' 
-    });
+    return error(res, 'Duplicate record — entry already exists', 409);
   }
-
-  // MSSQL Foreign Key Violation
   if (err.number === 547) {
-    return res.status(400).json({ 
-      success: false, 
-      message: 'Referenced resource does not exist or is being used' 
-    });
+    return error(res, 'Cannot delete — record has dependent data', 409);
   }
 
-  // General Status Handling
-  const status  = err.statusCode || err.status || 500;
-  
-  // Production security: Don't leak raw 500 errors to client
-  const message = process.env.NODE_ENV === 'production' && status === 500
-    ? 'Internal server error'
-    : err.message;
-
-  return res.status(status).json({ 
-    success: false, 
-    message 
-  });
+  const status = err.status || err.statusCode || 500;
+  return error(res, err.message || 'Internal Server Error', status);
 };
 
 module.exports = errorHandler;
