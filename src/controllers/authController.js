@@ -1,125 +1,91 @@
 // src/controllers/authController.js
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { v4: uuidv4 } = require('uuid');
 const { query, queryOne, sql } = require('../config/db');
-const { success, created, badRequest, unauthorized } = require('../utils/response');
-const { audit } = require('../utils/audit');
+const { success, badRequest, unauthorized } = require('../utils/response');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-const signToken = (payload) =>
-  jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
-
-const signRefresh = (payload) =>
-  jwt.sign(payload, process.env.JWT_REFRESH_SECRET, { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d' });
+const signToken = (payload) => jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
+const signRefresh = (payload) => jwt.sign(payload, process.env.JWT_REFRESH_SECRET, { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d' });
 
 // ── POST /api/auth/login ───────────────────────────────────────────────────
 exports.login = async (req, res, next) => {
   try {
-    const { email, password, school_slug } = req.body;
+    // 🔥 Smart Login: Sirf email aur password chahiye (school_slug hataya)
+    const { email, password } = req.body;
+    if (!email || !password) return badRequest(res, 'Email and password are required');
 
-    // Find school by slug
-    const school = await queryOne(
-      `SELECT id, name, is_active FROM schools WHERE slug = @slug AND deleted_at IS NULL`,
-      { slug: { type: sql.NVarChar(255), value: school_slug } }
-    );
-    if (!school || !school.is_active) return badRequest(res, 'School not found or inactive');
+    // 1. Find User by Email (Direct from users table)
+    const user = await queryOne(`SELECT id, full_name, email, password, is_active FROM users WHERE email = @email AND deleted_at IS NULL`, {
+      email: { type: sql.NVarChar(255), value: email }
+    });
+    
+    if (!user) return unauthorized(res, 'Invalid credentials');
+    if (!user.is_active) return unauthorized(res, 'Account is inactive');
 
-    // Find user + auth record
-    const userAuth = await queryOne(
-      `SELECT u.id AS user_id, u.full_name, u.email, u.is_active,
-              ua.password_hash, ua.failed_attempts, ua.locked_until,
-              sm.id AS member_id, sm.role, sm.permissions, sm.is_active AS member_active
-       FROM   users u
-       JOIN   user_auth ua ON ua.user_id = u.id
-       JOIN   school_members sm ON sm.user_id = u.id AND sm.school_id = @schoolId
-       WHERE  u.email = @email AND u.deleted_at IS NULL AND sm.deleted_at IS NULL`,
-      {
-        email:    { type: sql.NVarChar(255),     value: email },
-        schoolId: { type: sql.UniqueIdentifier, value: school.id },
-      }
-    );
+    // 2. Verify Password using Bcrypt
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) return unauthorized(res, 'Invalid credentials');
 
-    if (!userAuth) return unauthorized(res, 'Invalid credentials');
-    if (!userAuth.is_active || !userAuth.member_active) return unauthorized(res, 'Account is inactive');
+    // 3. Find which School this User belongs to via school_members
+    const memberData = await queryOne(`
+      SELECT sm.school_id, sm.role, sm.permissions, sm.is_active AS member_active, 
+             s.name AS school_name, s.slug AS school_code
+      FROM school_members sm
+      JOIN schools s ON sm.school_id = s.id
+      WHERE sm.user_id = @userId AND sm.deleted_at IS NULL AND s.deleted_at IS NULL AND s.is_active = 1
+    `, { userId: { type: sql.UniqueIdentifier, value: user.id } });
 
-    // Lockout check
-    if (userAuth.locked_until && new Date(userAuth.locked_until) > new Date()) {
-      return unauthorized(res, 'Account locked. Try again later.');
-    }
+    if (!memberData) return unauthorized(res, 'User is not linked to any active school');
+    if (!memberData.member_active) return unauthorized(res, 'Your school access is currently suspended');
 
-    const valid = await bcrypt.compare(password, userAuth.password_hash);
-    if (!valid) {
-      await query(
-        `UPDATE user_auth SET failed_attempts = failed_attempts + 1,
-          locked_until = CASE WHEN failed_attempts + 1 >= 5 THEN DATEADD(MINUTE,30,GETUTCDATE()) ELSE NULL END
-         WHERE user_id = @uid`,
-        { uid: { type: sql.UniqueIdentifier, value: userAuth.user_id } }
-      );
-      return unauthorized(res, 'Invalid credentials');
-    }
+    // 4. Update Last Login Time
+    await query(`UPDATE users SET last_login_at = GETUTCDATE() WHERE id = @userId`, { 
+      userId: { type: sql.UniqueIdentifier, value: user.id } 
+    });
 
-    // Reset failed attempts + update last_login
-    await query(
-      `UPDATE user_auth SET failed_attempts = 0, locked_until = NULL WHERE user_id = @uid;
-       UPDATE users SET last_login_at = GETUTCDATE() WHERE id = @uid`,
-      { uid: { type: sql.UniqueIdentifier, value: userAuth.user_id } }
-    );
-
-    const payload = { userId: userAuth.user_id, schoolId: school.id, role: userAuth.role };
+    // 5. Generate Secure JWT Token (Contains DB school_id)
+    const payload = { userId: user.id, schoolId: memberData.school_id, role: memberData.role };
     const token = signToken(payload);
     const refreshToken = signRefresh(payload);
-
-    await audit({ req, action: 'LOGIN', tableName: 'users', recordId: userAuth.user_id });
 
     return success(res, {
       token,
       refreshToken,
       user: {
-        id:          userAuth.user_id,
-        fullName:    userAuth.full_name,
-        email:       userAuth.email,
-        role:        userAuth.role,
-        permissions: JSON.parse(userAuth.permissions || '{}'),
-        school: { id: school.id, name: school.name, slug: school_slug },
+        id: user.id,
+        fullName: user.full_name,
+        email: user.email,
+        role: memberData.role,
+        permissions: JSON.parse(memberData.permissions || '{}'),
+        school: { 
+          id: memberData.school_id, // Frontend requires this ID for context, but backend relies on Token's ID
+          name: memberData.school_name, 
+          code: memberData.school_code 
+        },
       },
     });
   } catch (err) { next(err); }
 };
 
-// ── POST /api/auth/refresh ─────────────────────────────────────────────────
-exports.refresh = async (req, res, next) => {
-  try {
-    const { refreshToken } = req.body;
-    if (!refreshToken) return badRequest(res, 'Refresh token required');
-
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const token = signToken({ userId: decoded.userId, schoolId: decoded.schoolId, role: decoded.role });
-    return success(res, { token });
-  } catch (err) {
-    if (err.name === 'TokenExpiredError') return unauthorized(res, 'Refresh token expired. Please log in again.');
-    next(err);
-  }
-};
-
 // ── GET /api/auth/me ───────────────────────────────────────────────────────
 exports.me = async (req, res, next) => {
   try {
-    const user = await queryOne(
-      `SELECT u.id, u.full_name, u.display_name, u.email, u.phone, u.avatar_url,
-              u.date_of_birth, u.gender, u.last_login_at,
-              sm.role, sm.permissions, sm.employee_code,
-              s.id AS school_id, s.name AS school_name, s.slug AS school_slug,
-              s.logo_url, s.brand_color
-       FROM   users u
-       JOIN   school_members sm ON sm.user_id = u.id AND sm.school_id = @schoolId
-       JOIN   schools s ON s.id = sm.school_id
-       WHERE  u.id = @userId AND u.deleted_at IS NULL`,
-      {
-        userId:   { type: sql.UniqueIdentifier, value: req.user.userId },
-        schoolId: { type: sql.UniqueIdentifier, value: req.user.schoolId },
-      }
-    );
+    const user = await queryOne(`
+      SELECT u.id, u.full_name, u.display_name, u.email, u.phone, u.avatar_url,
+             u.date_of_birth, u.gender, u.last_login_at,
+             sm.role, sm.permissions, sm.employee_code,
+             s.id AS school_id, s.name AS school_name, s.slug AS school_code, s.logo_url
+      FROM users u
+      JOIN school_members sm ON sm.user_id = u.id AND sm.school_id = @schoolId
+      JOIN schools s ON s.id = sm.school_id
+      WHERE u.id = @userId AND u.deleted_at IS NULL
+    `, {
+      userId: { type: sql.UniqueIdentifier, value: req.user.userId },
+      schoolId: { type: sql.UniqueIdentifier, value: req.user.schoolId }
+    });
+    
+    if (!user) return unauthorized(res, 'User session invalid');
     return success(res, user);
   } catch (err) { next(err); }
 };
@@ -128,18 +94,21 @@ exports.me = async (req, res, next) => {
 exports.changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    const userAuth = await queryOne(
-      `SELECT password_hash FROM user_auth WHERE user_id = @uid`,
-      { uid: { type: sql.UniqueIdentifier, value: req.user.userId } }
-    );
-    const valid = await bcrypt.compare(currentPassword, userAuth.password_hash);
+    
+    const user = await queryOne(`SELECT password FROM users WHERE id = @userId`, { 
+      userId: { type: sql.UniqueIdentifier, value: req.user.userId } 
+    });
+
+    const valid = await bcrypt.compare(currentPassword, user.password);
     if (!valid) return badRequest(res, 'Current password incorrect');
 
-    const hash = await bcrypt.hash(newPassword, 12);
-    await query(
-      `UPDATE user_auth SET password_hash = @hash WHERE user_id = @uid`,
-      { hash: { type: sql.NVarChar(255), value: hash }, uid: { type: sql.UniqueIdentifier, value: req.user.userId } }
-    );
-    return success(res, null, 'Password updated');
+    const newHash = await bcrypt.hash(newPassword, 12);
+    await query(`UPDATE users SET password = @hash WHERE id = @userId`, { 
+      hash: { type: sql.NVarChar(255), value: newHash }, 
+      userId: { type: sql.UniqueIdentifier, value: req.user.userId } 
+    });
+
+    return success(res, null, 'Password updated successfully');
   } catch (err) { next(err); }
 };
+
