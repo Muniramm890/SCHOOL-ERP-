@@ -2,131 +2,111 @@
 const { query } = require('../config/db');
 const sql = require('mssql');
 const { sendWhatsAppOtp } = require('../utils/whatsapp');
-const logger = require('../utils/logger');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-// 1. Send 6-Digit OTP (With Lazy Delete Storage Cleanup)
+// Helper: Custom Unique School Code Generator (e.g., SUNRISE -> SUN-260603-458)
+const generateSchoolCode = (schoolName) => {
+  const initials = schoolName.replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase();
+  const dateStr = new Date().toISOString().slice(2, 10).replace(/-/g, ''); // YYMMDD
+  const randomNum = Math.floor(100 + Math.random() * 900); // 3 digit random
+  return `${initials}-${dateStr}-${randomNum}`;
+};
+
+// 1. Send 6-Digit OTP
 const sendOtp = async (req, res, next) => {
   const { phone } = req.body;
-  if (!phone || phone.length < 10) {
-    return res.status(400).json({ success: false, message: 'Valid phone number is required' });
-  }
+  if (!phone || phone.length < 10) return res.status(400).json({ success: false, message: 'Valid phone is required' });
 
   try {
-    // 🟢 LAZY DELETE: Storage cleanup before inserting new one
     await query(`DELETE FROM OtpVerifications WHERE ExpiresAt < GETDATE()`);
-
-    // 🔴 6-Digit OTP Generation Logic
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Insert new OTP with 10 minutes expiry
-    const insertQuery = `
+    await query(`
       INSERT INTO OtpVerifications (Phone, Otp, ExpiresAt)
       VALUES (@phone, @otp, DATEADD(minute, 10, GETDATE()))
-    `;
-    
-    await query(insertQuery, {
+    `, {
       phone: { type: sql.VarChar, value: phone },
       otp: { type: sql.VarChar, value: otp }
     });
 
-    // Send WhatsApp Message
     await sendWhatsAppOtp(phone, otp);
-
     res.json({ success: true, message: '6-digit verification code sent on WhatsApp' });
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { next(error); }
 };
 
 // 2. Verify OTP
 const verifyOtp = async (req, res, next) => {
   const { phone, otp } = req.body;
-  if (!phone || !otp) {
-    return res.status(400).json({ success: false, message: 'Phone and OTP are required' });
-  }
+  if (!phone || !otp) return res.status(400).json({ success: false, message: 'Phone and OTP are required' });
 
   try {
     const checkQuery = `
       SELECT TOP 1 * FROM OtpVerifications 
-      WHERE Phone = @phone AND Otp = @otp AND ExpiresAt > GETDATE()
-      ORDER BY CreatedAt DESC
+      WHERE Phone = @phone AND Otp = @otp AND ExpiresAt > GETDATE() ORDER BY CreatedAt DESC
     `;
-
     const result = await query(checkQuery, {
       phone: { type: sql.VarChar, value: phone },
       otp: { type: sql.VarChar, value: otp }
     });
 
-    if (result.recordset.length === 0) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
-    }
+    if (result.recordset.length === 0) return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
 
-    // OTP Valid hai! Use instantaneous delete kar dein taaki reuse na ho sake
-    await query(`DELETE FROM OtpVerifications WHERE Phone = @phone`, {
-      phone: { type: sql.VarChar, value: phone }
-    });
-
+    await query(`DELETE FROM OtpVerifications WHERE Phone = @phone`, { phone: { type: sql.VarChar, value: phone } });
     res.json({ success: true, message: 'OTP Verified successfully' });
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { next(error); }
 };
 
-// 3. Register School & Admin Account (Multi-Tenant Architecture)
+// 3. Register School & Admin Account
 const registerSchool = async (req, res, next) => {
   const { schoolName, affiliationNo, addressLine1, city, state, adminName, email, phone, password } = req.body;
 
   try {
-    // 1. Check duplicate Admin/User
+    // 1. Check duplicate Email/Phone in users
     const checkUser = await query(`SELECT id FROM users WHERE email = @email OR phone = @phone`, {
       email: { type: sql.VarChar, value: email },
       phone: { type: sql.VarChar, value: phone }
     });
-    if (checkUser.recordset.length > 0) {
-      return res.status(400).json({ success: false, message: 'Admin with this Email or Phone already exists' });
-    }
+    if (checkUser.recordset.length > 0) return res.status(400).json({ success: false, message: 'Admin with this Email or Phone already exists' });
 
-    // 2. Hash Password & Create School Slug
-    const salt = await bcrypt.genSalt(10);
+    // 2. Generate Hash & Custom School ID
+    const salt = await bcrypt.genSalt(12);
     const hashedPassword = await bcrypt.hash(password, salt);
-    const slug = schoolName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
+    const customSchoolCode = generateSchoolCode(schoolName); // 🔥 Custom Unique ID Generation
 
-    // 3. Default "SCHOOL OFFICE" Organisation Logic (Fixed for all)
+    // 3. Default Organisation
     let orgId;
     const checkOrg = await query(`SELECT id FROM organisations WHERE slug = 'school-office-default'`);
-    
     if (checkOrg.recordset.length > 0) {
       orgId = checkOrg.recordset[0].id;
     } else {
       const orgRes = await query(`
         INSERT INTO organisations (name, slug, owner_email, plan_type) 
-        OUTPUT INSERTED.id 
-        VALUES ('SCHOOL OFFICE', 'school-office-default', 'admin@schooloffice.tech', 'enterprise')
+        OUTPUT INSERTED.id VALUES ('SCHOOL OFFICE', 'school-office-default', 'admin@schooloffice.tech', 'enterprise')
       `);
       orgId = orgRes.recordset[0].id;
     }
 
-    // 4. Create School (Exact DB Columns: address_line1, affiliation_no)
+    // 4. Create School (Added Custom Code to slug and udise_code)
     const schoolRes = await query(`
-      INSERT INTO schools (organisation_id, name, slug, affiliation_no, address_line1, city, state, country, is_active) 
+      INSERT INTO schools (organisation_id, name, slug, email, phone, udise_code, affiliation_no, address_line1, city, state, country, is_active) 
       OUTPUT INSERTED.id 
-      VALUES (@orgId, @name, @slug, @affiliationNo, @addressLine1, @city, @state, 'India', 1)
+      VALUES (@orgId, @name, @slug, @email, @phone, @udiseCode, @affiliationNo, @addressLine1, @city, @state, 'India', 1)
     `, {
       orgId: { type: sql.UniqueIdentifier, value: orgId },
-      name: { type: sql.VarChar, value: schoolName },
-      slug: { type: sql.VarChar, value: slug },
-      email: { type: sql.VarChar, value: email },        
+      name: { type: sql.NVarChar, value: schoolName },
+      slug: { type: sql.VarChar, value: customSchoolCode }, // 🔥 Saves SPS-260603-912
+      email: { type: sql.VarChar, value: email },
       phone: { type: sql.VarChar, value: phone },
+      udiseCode: { type: sql.VarChar, value: customSchoolCode }, // Custom code mapping
       affiliationNo: { type: sql.VarChar, value: affiliationNo },
-      addressLine1: { type: sql.VarChar, value: addressLine1 },
-      city: { type: sql.VarChar, value: city },
-      state: { type: sql.VarChar, value: state }
+      addressLine1: { type: sql.NVarChar, value: addressLine1 },
+      city: { type: sql.NVarChar, value: city },
+      state: { type: sql.NVarChar, value: state }
     });
     const schoolId = schoolRes.recordset[0].id;
 
-    // 5. Auto-Create Current Academic Year (Crucial for ERP operations)
+    // 5. Auto-Create Current Academic Year
     const currentYear = new Date().getFullYear(); 
     await query(`
       INSERT INTO academic_years (school_id, name, start_date, end_date, is_current)
@@ -138,20 +118,20 @@ const registerSchool = async (req, res, next) => {
       endDate: { type: sql.Date, value: `${currentYear + 1}-03-31` }
     });
 
-    // 6. Create User Admin (Using full_name)
+    // 6. Create User Admin (Password goes directly to users table)
     const userRes = await query(`
       INSERT INTO users (full_name, email, phone, password, is_active) 
       OUTPUT INSERTED.id 
       VALUES (@fullName, @email, @phone, @password, 1)
     `, {
-      fullName: { type: sql.VarChar, value: adminName }, 
+      fullName: { type: sql.NVarChar, value: adminName }, 
       email: { type: sql.VarChar, value: email },
       phone: { type: sql.VarChar, value: phone },
-      password: { type: sql.VarChar, value: hashedPassword }
+      password: { type: sql.VarChar, value: hashedPassword } // 🔥 Bulletproof Hashing
     });
     const userId = userRes.recordset[0].id;
 
-    // 7. Link User to School as 'school_admin'
+    // 7. Link User to School
     await query(`
       INSERT INTO school_members (school_id, user_id, role, is_active) 
       VALUES (@schoolId, @userId, 'school_admin', 1)
@@ -160,13 +140,11 @@ const registerSchool = async (req, res, next) => {
       userId: { type: sql.UniqueIdentifier, value: userId }
     });
 
-    // 8. Generate Final Auth Token
+    // 8. Generate JWT
     const token = jwt.sign({ schoolId, userId, role: 'school_admin' }, process.env.JWT_SECRET, { expiresIn: '24h' });
 
-    res.status(201).json({ success: true, message: 'School registered successfully', token });
-  } catch (error) {
-    next(error);
-  }
+    res.status(201).json({ success: true, message: 'School registered successfully', token, schoolCode: customSchoolCode });
+  } catch (error) { next(error); }
 };
 
 module.exports = { sendOtp, verifyOtp, registerSchool };
