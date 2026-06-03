@@ -221,3 +221,32 @@ exports.updateSchool = async (req, res, next) => {
     return success(res, null, 'School settings saved');
   } catch (err) { next(err); }
 };
+
+
+exports.bulkCreateSetup = async (req, res, next) => {
+  const { classes, sectionMap } = req.body; // { classes: ['Class 1'], sectionMap: {'Class 1': ['A', 'B']} }
+  const { schoolId } = req.user;
+
+  try {
+    // 1. Transaction start karein
+    const transaction = new sql.Transaction();
+    await transaction.begin();
+
+    for (const cls of classes) {
+      // Create Grade
+      const gradeRes = await transaction.request()
+        .input('sid', schoolId).input('name', cls)
+        .query(`INSERT INTO grades (id, school_id, name) VALUES (NEWID(), @sid, @name);`);
+
+      // Create Sections
+      const sections = sectionMap[cls] || [];
+      for (const sec of sections) {
+        await transaction.request()
+          .input('sid', schoolId).input('name', sec)
+          .query(`INSERT INTO sections (id, school_id, name) VALUES (NEWID(), @sid, @name);`);
+      }
+    }
+    await transaction.commit();
+    success(res, null, 'Bulk structure created');
+  } catch (err) { await transaction.rollback(); next(err); }
+};
