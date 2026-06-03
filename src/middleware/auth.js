@@ -12,7 +12,10 @@ const authenticate = async (req, res, next) => {
     }
 
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    // 🔥 THE FIX: Yahan same fallback secret use karna zaroori hai!
+    const secretKey = process.env.JWT_SECRET || 'my_super_secret_fallback_key_2026';
+    const decoded = jwt.verify(token, secretKey);
 
     // Fetch live user + school member record
     const member = await queryOne(
@@ -45,6 +48,9 @@ const authenticate = async (req, res, next) => {
 
     next();
   } catch (err) {
+    // Console log add kiya taaki exact error server logs mein dikhe
+    console.error("Auth Middleware Error:", err.message);
+    
     if (err.name === 'TokenExpiredError') return unauthorized(res, 'Token expired');
     if (err.name === 'JsonWebTokenError') return unauthorized(res, 'Invalid token');
     next(err);
