@@ -5,12 +5,12 @@ const { query, queryOne, sql } = require('../config/db');
 const { success, badRequest, unauthorized } = require('../utils/response');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-// Token mein hum sirf zaroori aur non-sensitive info (IDs aur Role) pack karenge
+// ── Helpers ────────────────────────────────────────────────────────────────
 const signToken = (payload) => 
-  jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '24h' });
+  jwt.sign(payload, 'temp_secret_key_12345', { expiresIn: '24h' }); // 👈 Direct string for testing
 
 const signRefresh = (payload) => 
-  jwt.sign(payload, process.env.JWT_REFRESH_SECRET, { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d' });
+  jwt.sign(payload, 'temp_refresh_key_12345', { expiresIn: '30d' }); // 👈 Direct string for testing
 
 // ── POST /api/auth/login ───────────────────────────────────────────────────
 exports.login = async (req, res, next) => {
