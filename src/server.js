@@ -1,105 +1,106 @@
+// src/server.js
 require('dotenv').config();
-
-const express      = require('express');
-const cors         = require('cors');
-const helmet       = require('helmet');
-const morgan       = require('morgan');
-const compression  = require('compression');
-const fs           = require('fs');
-const path         = require('path');
-
-const routes       = require('./routes/index');
+const express    = require('express');
+const cors       = require('cors');
+const helmet     = require('helmet');
+const morgan     = require('morgan');
+const compression= require('compression');
+const rateLimit  = require('express-rate-limit');
+const { getPool }= require('./config/db');
+const logger     = require('./utils/logger');
 const errorHandler = require('./middleware/errorHandler');
-const { generalLimiter } = require('./middleware/rateLimiter');
-const logger       = require('./config/logger');
-const { poolPromise } = require('./config/db'); // Added DB pool check
 
-// ── Ensure logs dir exists ────────────────────────────────────
-const logsDir = path.join(__dirname, '../logs');
-if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir);
+const app = express();
 
-const app  = express();
-const PORT = process.env.PORT || 8080;
-
-// ── Trust Azure proxy ─────────────────────────────────────────
-// Azure Web Apps use a reverse proxy. This ensures req.ip and rate limiters work correctly.
-app.set('trust proxy', 1);
-
-// ── Security & Compression ────────────────────────────────────
-app.use(helmet());
+// ── Security & compression ─────────────────────────────────────────────
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(compression());
+
+// ── CORS ──────────────────────────────────────────────────────────────
+const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000').split(',');
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production'
-    ? [process.env.APP_URL] // Restrict to your frontend domain in production
-    : '*',
+  origin: (origin, cb) => {
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: ${origin} not allowed`));
+  },
   credentials: true,
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization','X-School-Id'],
 }));
+app.options('*', cors());
 
-// ── Request logging ───────────────────────────────────────────
-app.use(morgan('combined', {
-  stream: { write: (msg) => logger.info(msg.trim()) }
-}));
-
-// ── Body parsers ──────────────────────────────────────────────
+// ── Body parsing ──────────────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ── Rate limiter (global) ─────────────────────────────────────
-app.use('/api/', generalLimiter);
+// ── Logging ───────────────────────────────────────────────────────────
+if (process.env.NODE_ENV !== 'test') {
+  app.use(morgan('combined', {
+    stream: { write: (msg) => logger.info(msg.trim()) },
+  }));
+}
 
-// ── Health check (Azure requires this) ───────────────────────
-app.get('/health', async (req, res) => {
-  try {
-    const pool = await poolPromise;
-    await pool.request().query('SELECT 1'); // Simple DB ping
-    res.status(200).json({
-      status:    'ok',
-      database:  'connected',
-      timestamp: new Date().toISOString(),
-      uptime:    process.uptime(),
-    });
-  } catch (err) {
-    res.status(503).json({ status: 'unhealthy', error: err.message });
-  }
+// ── Rate limiting ──────────────────────────────────────────────────────
+app.use('/api/auth/login', rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 20,
+  message: { success: false, message: 'Too many login attempts. Try after 15 minutes.' },
+}));
+
+app.use('/api/', rateLimit({
+  windowMs: 1 * 60 * 1000,  // 1 min
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests' },
+}));
+
+// ── Health check ───────────────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', env: process.env.NODE_ENV, ts: new Date().toISOString() });
 });
 
-// ── API Routes ────────────────────────────────────────────────
-app.use('/api/v1', routes);
+// ── API Routes ─────────────────────────────────────────────────────────
+const API = '/api';
 
-// ── 404 Handler ───────────────────────────────────────────────
+app.use(`${API}/auth`,          require('./routes/auth'));
+app.use(`${API}/dashboard`,     require('./routes/dashboard'));
+app.use(`${API}/setup`,         require('./routes/setup'));
+app.use(`${API}/students`,      require('./routes/students'));
+app.use(`${API}/teachers`,      require('./routes/teachers'));
+app.use(`${API}/attendance`,    require('./routes/attendance'));
+app.use(`${API}/fees`,          require('./routes/fees'));
+app.use(`${API}/results`,       require('./routes/results'));
+app.use(`${API}/timetables`,    require('./routes/timetables'));
+app.use(`${API}/quick-tests`,   require('./routes/quickTests'));
+app.use(`${API}/exams`,         require('./routes/exams'));
+app.use(`${API}/notices`,       require('./routes/notices'));
+app.use(`${API}/homework`,      require('./routes/homework'));
+
+// ── 404 ────────────────────────────────────────────────────────────────
 app.use((req, res) => {
-  res.status(404).json({ success: false, message: 'Route not found' });
+  res.status(404).json({ success: false, message: `Route ${req.method} ${req.path} not found` });
 });
 
-// ── Global Error Handler ──────────────────────────────────────
+// ── Global error handler ───────────────────────────────────────────────
 app.use(errorHandler);
 
-// ── Start Server with DB Warm-up ──────────────────────────────
-const startServer = async () => {
-  try {
-    // Ensure DB is reachable before accepting requests
-    await poolPromise;
-    logger.info('✅ Azure SQL Connection established');
+// ── Start ──────────────────────────────────────────────────────────────
+const PORT = process.env.PORT || 5000;
 
+const start = async () => {
+  try {
+    await getPool();                       // warm up DB pool on startup
     app.listen(PORT, () => {
-      logger.info(`🚀 Server running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
+      logger.info(`🚀 School ERP API running on port ${PORT} [${process.env.NODE_ENV}]`);
+      logger.info(`📡 Azure SQL: ${process.env.DB_SERVER}/${process.env.DB_DATABASE}`);
     });
   } catch (err) {
-    logger.error('❌ Failed to connect to database:', err);
+    logger.error('❌ Startup failed:', err.message);
     process.exit(1);
   }
 };
 
-startServer();
+start();
 
-// ── Graceful shutdown ─────────────────────────────────────────
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM received — shutting down gracefully');
-  process.exit(0);
-});
-
-process.on('unhandledRejection', (reason) => {
-  logger.error('Unhandled Rejection:', reason);
-});
-
-module.exports = app;
+module.exports = app; // for testing
