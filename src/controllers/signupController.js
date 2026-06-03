@@ -117,6 +117,8 @@ const registerSchool = async (req, res, next) => {
       orgId: { type: sql.UniqueIdentifier, value: orgId },
       name: { type: sql.VarChar, value: schoolName },
       slug: { type: sql.VarChar, value: slug },
+      email: { type: sql.VarChar, value: email },        
+      phone: { type: sql.VarChar, value: phone },
       affiliationNo: { type: sql.VarChar, value: affiliationNo },
       addressLine1: { type: sql.VarChar, value: addressLine1 },
       city: { type: sql.VarChar, value: city },
