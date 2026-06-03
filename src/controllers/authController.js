@@ -5,12 +5,13 @@ const { query, queryOne, sql } = require('../config/db');
 const { success, badRequest, unauthorized } = require('../utils/response');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-// ── Helpers ────────────────────────────────────────────────────────────────
-const signToken = (payload) => 
-  jwt.sign(payload, 'temp_secret_key_12345', { expiresIn: '24h' }); // 👈 Direct string for testing
+// Hardcode the secret for testing right now
+const secret = 'my_super_secret_key_2026_xyz'; 
+const signToken = (payload) => jwt.sign(payload, secret, { expiresIn: '24h' });
+ // 👈 Direct string for testing
 
 const signRefresh = (payload) => 
-  jwt.sign(payload, 'temp_refresh_key_12345', { expiresIn: '30d' }); // 👈 Direct string for testing
+  jwt.sign(payload, secret, { expiresIn: '30d' }); // 👈 Direct string for testing
 
 // ── POST /api/auth/login ───────────────────────────────────────────────────
 exports.login = async (req, res, next) => {
