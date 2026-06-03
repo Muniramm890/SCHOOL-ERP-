@@ -11,6 +11,7 @@ const logger     = require('./utils/logger');
 const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
+app.set('trust proxy', 1); 
 
 // ── Security & compression ─────────────────────────────────────────────
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
