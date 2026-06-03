@@ -17,7 +17,9 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(compression());
 
 // ── CORS ──────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000').split(',');
+// ── CORS ──────────────────────────────────────────────────────────────
+const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000,https://dpw5tz.csb.app').split(',');
+
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
