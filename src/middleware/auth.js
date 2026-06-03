@@ -57,12 +57,15 @@ const decoded = jwt.verify(token, secretKey);
   }
 };
 
-// Role-based authorization
-const authorize = (...roles) => (req, res, next) => {
-  if (!roles.includes(req.user.role)) {
-    return forbidden(res, `Access denied. Required: ${roles.join(' or ')}`);
-  }
-  next();
+
+const authorize = (...allowedRoles) => (req, res, next) => {
+  // Agar user ka role 'school_admin' hai, toh usey har jagah access do
+  if (req.user.role === 'school_admin') return next();
+  
+  // Agar specific roles check karne hain
+  if (allowedRoles.includes(req.user.role)) return next();
+  
+  return forbidden(res, 'Access denied. You do not have the required permissions.');
 };
 
 // School ID consistency check — frontend must send X-School-Id header or route param
