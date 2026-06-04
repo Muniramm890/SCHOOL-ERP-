@@ -6,12 +6,17 @@ const helmet     = require('helmet');
 const morgan     = require('morgan');
 const compression= require('compression');
 const rateLimit  = require('express-rate-limit');
-const { getPool }= require('./config/db');
+const { getPool, poolPromise } = require('./config/db');
 const logger     = require('./utils/logger');
 const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
-app.set('trust proxy', 1); 
+app.set('trust proxy', 1);
+
+const customKeyGenerator = (req) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  return typeof ip === 'string' ? ip.split(',')[0].trim() : 'unknown';
+};
 
 // ── Security & compression ─────────────────────────────────────────────
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
@@ -47,12 +52,14 @@ if (process.env.NODE_ENV !== 'test') {
 app.use('/api/auth/login', rateLimit({
   windowMs: 15 * 60 * 1000, // 15 min
   max: 20,
+  keyGenerator: customKeyGenerator,
   message: { success: false, message: 'Too many login attempts. Try after 15 minutes.' },
 }));
 
 app.use('/api/', rateLimit({
   windowMs: 1 * 60 * 1000,  // 1 min
   max: 300,
+  keyGenerator: customKeyGenerator,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests' },
@@ -104,6 +111,26 @@ const start = async () => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// HEARTBEAT / KEEP-ALIVE (Azure SQL & App Service Protection)
+// ═══════════════════════════════════════════════════════════════
+const keepAlive = async () => {
+  try {
+    const pool = await poolPromise; // DB Connection
+    await pool.request().query('SELECT 1'); // SQL Server ko jagaye rakho
+    console.log("💚 Heartbeat: SQL Server & Backend are active.");
+  } catch (err) {
+    console.error("💔 Heartbeat failed:", err.message);
+  }
+};
+
+// Har 4 minute mein ping karo (Azure SQL hibernation aksar 5 min+ ke idle time pe hota hai)
+setInterval(keepAlive, 4 * 60 * 1000);
+
+// App start hote hi ek baar call kar do
+keepAlive();
+
 start();
+
 
 module.exports = app; // for testing
