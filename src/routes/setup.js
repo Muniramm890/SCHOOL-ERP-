@@ -22,6 +22,8 @@ router.post('/sections', authorize('school_admin'), ctrl.createSection);
 // ── Subjects Routes ──────────────────────────────────────────────────────
 router.get('/subjects', ctrl.listSubjects);
 router.post('/subjects', authorize('school_admin'), ctrl.createSubject);
+//-------------bulk entry___________________
+router.post('/bulk-academic', setupController.bulkAcademicSetup);
 
 // ── Academic Years Routes ────────────────────────────────────────────────
 router.get('/academic-years', ctrl.listAcademicYears);
