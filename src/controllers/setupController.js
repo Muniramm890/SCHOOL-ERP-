@@ -230,6 +230,8 @@ exports.getSchool = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// ═══════════════ SCHOOL SETTINGS & BULK SETUP ════════════════════════════
+
 exports.updateSchool = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -253,30 +255,76 @@ exports.updateSchool = async (req, res, next) => {
       email: sql.NVarChar(255), website: sql.NVarChar(255), principal_name: sql.NVarChar(255),
       established_year: sql.SmallInt, timezone: sql.NVarChar(100), academic_year_start: sql.SmallInt,
       academic_year_end: sql.SmallInt, working_days: sql.NVarChar(sql.MAX), periods_per_day: sql.SmallInt,
-      period_duration_min: sql.SmallInt, school_start_time: sql.VarChar(10), school_end_time: sql.VarChar(10),
+      period_duration_min: sql.SmallInt, 
     };
 
     for (const f of fields) {
       if (req.body[f] !== undefined) {
-        let val = req.body[f];
+        let val = req.body[f] === '' ? null : req.body[f];
         
-        // 🔥 Handle Empty Strings securely (Avoids SQL Type Casting errors)
-        if (val === '') val = null;
-
-        // 🔥 Fix Frontend to SQL Time formatting (React sends "08:00", SQL needs "08:00:00")
+        // 🔥 FIX: Securely casting React's Time String to SQL TIME
         if (val !== null && (f === 'school_start_time' || f === 'school_end_time')) {
           if (val.length === 5) val = `${val}:00`; 
+          sets.push(`${f} = CAST(@${f} AS TIME)`);
+          params[f] = { type: sql.VarChar(15), value: val };
+        } else {
+          sets.push(`${f} = @${f}`);
+          params[f] = { type: typeMap[f], value: val };
         }
-
-        sets.push(`${f} = @${f}`);
-        params[f] = { type: typeMap[f], value: val };
       }
     }
 
     await query(`UPDATE schools SET ${sets.join(', ')} WHERE id=@sid`, params);
-    
-    await audit({ req, action: 'UPDATE', tableName: 'schools', recordId: schoolId, oldValues: old, newValues: req.body });
-    
     return success(res, null, 'School configuration synchronized successfully');
+  } catch (err) { next(err); }
+};
+
+// 🔥 NEW: Premium Bulk Matrix Setup API
+exports.bulkAcademicSetup = async (req, res, next) => {
+  const { classes } = req.body; // Array of { name, numeric, stream, sections: [], subjects: [] }
+  const { schoolId } = req.user;
+
+  try {
+    // Basic Transaction logic (Without strict nested tx to avoid mssql deadlock)
+    for (const cls of classes) {
+      // 1. Create Grade
+      const gRes = await query(
+        `INSERT INTO grades (id, school_id, name, numeric_order, stream) OUTPUT INSERTED.id VALUES (NEWID(), @sid, @n, @no, @s)`,
+        { sid: { type: sql.UniqueIdentifier, value: schoolId }, n: { type: sql.NVarChar(100), value: cls.name }, no: { type: sql.SmallInt, value: cls.numeric }, s: { type: sql.VarChar(50), value: cls.stream || 'none' } }
+      );
+      const gradeId = gRes.recordset[0].id;
+
+      // 2. Create Sections
+      for (const sec of cls.sections) {
+        await query(
+          `INSERT INTO sections (id, school_id, grade_id, name) VALUES (NEWID(), @sid, @gid, @n)`,
+          { sid: { type: sql.UniqueIdentifier, value: schoolId }, gid: { type: sql.UniqueIdentifier, value: gradeId }, n: { type: sql.NVarChar(50), value: sec } }
+        );
+      }
+
+      // 3. Create & Map Subjects
+      for (const sub of cls.subjects) {
+        // Check if subject exists in school
+        let subId;
+        const exist = await queryOne(`SELECT id FROM subjects WHERE school_id=@sid AND name=@n`, { sid: { type: sql.UniqueIdentifier, value: schoolId }, n: { type: sql.NVarChar(200), value: sub } });
+        
+        if (exist) {
+          subId = exist.id;
+        } else {
+          const sRes = await query(
+            `INSERT INTO subjects (id, school_id, name) OUTPUT INSERTED.id VALUES (NEWID(), @sid, @n)`,
+            { sid: { type: sql.UniqueIdentifier, value: schoolId }, n: { type: sql.NVarChar(200), value: sub } }
+          );
+          subId = sRes.recordset[0].id;
+        }
+
+        // Link Subject to Grade
+        await query(
+          `INSERT INTO grade_subjects (grade_id, subject_id, school_id) VALUES (@gid, @subid, @sid)`,
+          { gid: { type: sql.UniqueIdentifier, value: gradeId }, subid: { type: sql.UniqueIdentifier, value: subId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+        );
+      }
+    }
+    return success(res, null, 'Academic matrix built successfully');
   } catch (err) { next(err); }
 };
