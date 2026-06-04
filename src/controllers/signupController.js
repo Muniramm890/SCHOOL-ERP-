@@ -184,7 +184,8 @@ const registerSchool = async (req, res, next) => {
     });
 
     // 8. Generate Auto-Login JWT
-    const token = jwt.sign({ schoolId, userId, role: 'school_admin' }, process.env.JWT_SECRET, { expiresIn: '24h' });
+    const secretKey = process.env.JWT_SECRET || 'my_super_secret_key_erp_2026';
+    const token = jwt.sign({ schoolId, userId, role: 'school_admin' }, secretKey, { expiresIn: '24h' });
 
     return res.status(201).json({ 
       success: true, 
