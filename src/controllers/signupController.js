@@ -97,6 +97,7 @@ const verifyOtp = async (req, res, next) => {
 };
 
 // ── 3. Register School & Admin Account ────────────────────────────────────
+// ── 3. Register School & Admin Account (FLAT ARCHITECTURE) ────────────────
 const registerSchool = async (req, res, next) => {
   const { schoolName, affiliationNo, addressLine1, city, state, adminName, email, phone, password } = req.body;
 
@@ -116,27 +117,12 @@ const registerSchool = async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(password, salt);
     const customSchoolCode = generateSchoolCode(schoolName); 
 
-    // 3. Auto-Setup Organisation
-    let orgId;
-    const checkOrg = await query(`SELECT id FROM organisations WHERE slug = 'school-office-default'`);
-    if (checkOrg.recordset.length > 0) {
-      orgId = checkOrg.recordset[0].id;
-    } else {
-      const orgRes = await query(`
-        INSERT INTO organisations (name, slug, owner_email, plan_type) 
-        OUTPUT INSERTED.id 
-        VALUES ('SCHOOL OFFICE', 'school-office-default', 'admin@schooloffice.tech', 'enterprise')
-      `);
-      orgId = orgRes.recordset[0].id;
-    }
-
-    // 4. Create School 
+    // 3. Create School DIRECTLY (No Organisation Logic anymore)
     const schoolRes = await query(`
-      INSERT INTO schools (organisation_id, name, slug, email, phone, udise_code, affiliation_no, address_line1, city, state, country, is_active) 
+      INSERT INTO schools (name, slug, email, phone, udise_code, affiliation_no, address_line1, city, state, country, is_active) 
       OUTPUT INSERTED.id 
-      VALUES (@orgId, @name, @slug, @email, @phone, @udiseCode, @affiliationNo, @addressLine1, @city, @state, 'India', 1)
+      VALUES (@name, @slug, @email, @phone, @udiseCode, @affiliationNo, @addressLine1, @city, @state, 'India', 1)
     `, {
-      orgId: { type: sql.UniqueIdentifier, value: orgId },
       name: { type: sql.NVarChar, value: schoolName },
       slug: { type: sql.VarChar, value: customSchoolCode }, 
       email: { type: sql.VarChar, value: email },
@@ -149,7 +135,7 @@ const registerSchool = async (req, res, next) => {
     });
     const schoolId = schoolRes.recordset[0].id;
 
-    // 5. Create Academic Year
+    // 4. Create Academic Year automatically
     const currentYear = new Date().getFullYear(); 
     await query(`
       INSERT INTO academic_years (school_id, name, start_date, end_date, is_current)
@@ -161,7 +147,7 @@ const registerSchool = async (req, res, next) => {
       endDate: { type: sql.Date, value: `${currentYear + 1}-03-31` }
     });
 
-    // 6. Create Admin User 
+    // 5. Create Admin User 
     const userRes = await query(`
       INSERT INTO users (full_name, email, phone, password, is_active) 
       OUTPUT INSERTED.id 
@@ -174,7 +160,7 @@ const registerSchool = async (req, res, next) => {
     });
     const userId = userRes.recordset[0].id;
 
-    // 7. Map User to School
+    // 6. Map User to School
     await query(`
       INSERT INTO school_members (school_id, user_id, role, is_active) 
       VALUES (@schoolId, @userId, 'school_admin', 1)
@@ -183,7 +169,7 @@ const registerSchool = async (req, res, next) => {
       userId: { type: sql.UniqueIdentifier, value: userId }
     });
 
-    // 8. Generate Auto-Login JWT
+    // 7. Generate Auto-Login JWT
     const secretKey = process.env.JWT_SECRET || 'my_super_secret_key_erp_2026';
     const token = jwt.sign({ schoolId, userId, role: 'school_admin' }, secretKey, { expiresIn: '24h' });
 
@@ -195,17 +181,12 @@ const registerSchool = async (req, res, next) => {
     });
 
   } catch (error) { 
-    // 🔥 CATCH BLOCK FOR DATABASE CONSTRAINTS (Unique Keys)
+    // Handle Unique Email/Phone Database constraints
     if (error.number === 2627 || error.number === 2601) {
       const isEmail = error.message.includes('email') || error.message.includes('UQ_users_email');
       const field = isEmail ? 'Email' : 'Phone number';
-      
-      return res.status(400).json({ 
-        success: false, 
-        message: `Admin account with this ${field} already exists. Please log in or use different details.` 
-      });
+      return res.status(400).json({ success: false, message: `Admin account with this ${field} already exists. Please log in or use different details.` });
     }
-    
     console.error("Registration Error:", error);
     next(error); 
   }
