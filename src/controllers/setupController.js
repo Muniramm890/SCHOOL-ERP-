@@ -280,12 +280,28 @@ exports.updateSchool = async (req, res, next) => {
 };
 
 // 🔥 NEW: Premium Bulk Matrix Setup API
+// 🔥 NEW: Premium Bulk Matrix Setup API
 exports.bulkAcademicSetup = async (req, res, next) => {
   const { classes } = req.body; // Array of { name, numeric, stream, sections: [], subjects: [] }
   const { schoolId } = req.user;
 
   try {
-    // Basic Transaction logic (Without strict nested tx to avoid mssql deadlock)
+    // 🔴 THE FIX: Get the Current Active Academic Year for this School
+    const activeYear = await queryOne(
+      `SELECT id FROM academic_years WHERE school_id=@sid AND is_current=1 AND deleted_at IS NULL`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+    
+    // Fallback if no active year is explicitly set (grab the latest one)
+    let academicYearId = activeYear ? activeYear.id : null;
+    if (!academicYearId) {
+       const latestYear = await queryOne(
+         `SELECT TOP 1 id FROM academic_years WHERE school_id=@sid AND deleted_at IS NULL ORDER BY created_at DESC`,
+         { sid: { type: sql.UniqueIdentifier, value: schoolId } }
+       );
+       academicYearId = latestYear ? latestYear.id : null;
+    }
+
     for (const cls of classes) {
       // 1. Create Grade
       const gRes = await query(
@@ -294,11 +310,16 @@ exports.bulkAcademicSetup = async (req, res, next) => {
       );
       const gradeId = gRes.recordset[0].id;
 
-      // 2. Create Sections
+      // 2. Create Sections (Now strictly mapped to Academic Year)
       for (const sec of cls.sections) {
         await query(
-          `INSERT INTO sections (id, school_id, grade_id, name) VALUES (NEWID(), @sid, @gid, @n)`,
-          { sid: { type: sql.UniqueIdentifier, value: schoolId }, gid: { type: sql.UniqueIdentifier, value: gradeId }, n: { type: sql.NVarChar(50), value: sec } }
+          `INSERT INTO sections (id, school_id, grade_id, academic_year_id, name) VALUES (NEWID(), @sid, @gid, @ayid, @n)`,
+          { 
+            sid: { type: sql.UniqueIdentifier, value: schoolId }, 
+            gid: { type: sql.UniqueIdentifier, value: gradeId }, 
+            ayid: { type: sql.UniqueIdentifier, value: academicYearId }, // ✅ FIXED
+            n: { type: sql.NVarChar(50), value: sec } 
+          }
         );
       }
 
