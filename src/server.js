@@ -15,7 +15,7 @@ app.set('trust proxy', 1);
 
 const customKeyGenerator = (req) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-  return typeof ip === 'string' ? ip.split(',')[0].trim() : 'unknown';
+  return typeof ip === 'string' ? ip.split(',')[0].split(':')[0].trim() : 'unknown';
 };
 
 // ── Security & compression ─────────────────────────────────────────────
@@ -96,41 +96,41 @@ app.use((req, res) => {
 app.use(errorHandler);
 
 // ── Start ──────────────────────────────────────────────────────────────
+// ── Start & Heartbeat ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
+
+// Heartbeat Function
+const keepAlive = async () => {
+  try {
+    const pool = await getPool(); // Fetch the active pool
+    await pool.request().query('SELECT 1'); // Ping the DB
+    logger.info("💚 Heartbeat: SQL Server & Backend are active.");
+  } catch (err) {
+    logger.error("💔 Heartbeat failed: " + err.message);
+  }
+};
 
 const start = async () => {
   try {
-    await getPool();                       // warm up DB pool on startup
+    await getPool(); // Warm up DB pool on startup
+    
     app.listen(PORT, () => {
       logger.info(`🚀 School ERP API running on port ${PORT} [${process.env.NODE_ENV}]`);
       logger.info(`📡 Azure SQL: ${process.env.DB_SERVER}/${process.env.DB_DATABASE}`);
+      
+      // 🔥 Yahan call karein: Server start hone ke BAAD heartbeat shuru karein
+      keepAlive(); 
+      setInterval(keepAlive, 4 * 60 * 1000); // Har 4 minute
     });
+    
   } catch (err) {
     logger.error('❌ Startup failed:', err.message);
     process.exit(1);
   }
 };
 
-// ═══════════════════════════════════════════════════════════════
-// HEARTBEAT / KEEP-ALIVE (Azure SQL & App Service Protection)
-// ═══════════════════════════════════════════════════════════════
-const keepAlive = async () => {
-  try {
-    const pool = await poolPromise; // DB Connection
-    await pool.request().query('SELECT 1'); // SQL Server ko jagaye rakho
-    console.log("💚 Heartbeat: SQL Server & Backend are active.");
-  } catch (err) {
-    console.error("💔 Heartbeat failed:", err.message);
-  }
-};
-
-// Har 4 minute mein ping karo (Azure SQL hibernation aksar 5 min+ ke idle time pe hota hai)
-setInterval(keepAlive, 4 * 60 * 1000);
-
-// App start hote hi ek baar call kar do
-keepAlive();
-
+// Application kick-off
 start();
 
-
 module.exports = app; // for testing
+
