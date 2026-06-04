@@ -262,3 +262,36 @@ exports.update = async (req, res, next) => {
     return success(res, null, 'Student updated successfully');
   } catch (err) { next(err); }
 };
+// ── DELETE /api/students/:id (Deep Soft Delete) ───────────────────────────
+exports.remove = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { schoolId } = req.user;
+
+    const student = await queryOne(
+      `SELECT id FROM students WHERE id = @id AND school_id = @sid AND deleted_at IS NULL`,
+      { id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+    
+    if (!student) return notFound(res, 'Student not found');
+
+    // Transaction se teeno tables (Students, Enrolments, Guardians) mein ek sath soft-delete
+    await withTransaction(async (tx) => {
+      const r1 = tx.request();
+      r1.input('id', sql.UniqueIdentifier, id);
+      r1.input('sid', sql.UniqueIdentifier, schoolId);
+      
+      // 1. Delete Student
+      await r1.query(`UPDATE students SET deleted_at = GETUTCDATE(), is_active = 0, updated_at = GETUTCDATE() WHERE id = @id AND school_id = @sid`);
+      
+      // 2. Disable Enrolment
+      await r1.query(`UPDATE enrolments SET deleted_at = GETUTCDATE(), is_active = 0, updated_at = GETUTCDATE() WHERE student_id = @id AND school_id = @sid`);
+      
+      // 3. Disable Guardians
+      await r1.query(`UPDATE student_guardians SET deleted_at = GETUTCDATE(), updated_at = GETUTCDATE() WHERE student_id = @id AND school_id = @sid`);
+    });
+
+    await audit({ req, action: 'DELETE', tableName: 'students', recordId: id });
+    return success(res, null, 'Student record and dependencies deleted successfully');
+  } catch (err) { next(err); }
+};
