@@ -70,7 +70,7 @@ exports.list = async (req, res, next) => {
        WHERE ${where}
        ORDER BY g.numeric_order, sc.name, s.first_name
        OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
-      { ...params, offset: { type: sql.Int, value: +offset }, limit: { type: sql.Int, value: +limit } }
+      { ...params, offset: { type: sql.Int, value: +offset }, limit: { type: sql.Int, value: +limitNum }  }
     );
 
     // 🔥 3. FORMAT FOR FRONTEND (Nested Objects)
