@@ -13,8 +13,8 @@ exports.list = async (req, res, next) => {
     const pageNum = parseInt(req.query.page, 10) || 1;
     const limitNum = parseInt(req.query.limit, 10) || 50; // Aligned with frontend PAGE_SIZE = 50
     const offset = (pageNum - 1) * limitNum;
+    const { search, grade_id, section_id, gender, is_active, sort, id } = req.query; // 👈 'id' add kiya
     
-    const { search, grade_id, section_id, gender, is_active, sort } = req.query;
 
     // 🛡️ SaaS Core Rule: ALWAYS filter root table by school_id
     let where = `s.school_id = @sid AND s.deleted_at IS NULL`;
@@ -36,6 +36,10 @@ exports.list = async (req, res, next) => {
       // Smart check for gender filter if it comes from UI
       where += ` AND LOWER(s.gender) IN (@gender, CASE WHEN @gender='Male' THEN 'boy' ELSE 'girl' END)`;
       params.gender = { type: sql.VarChar(20), value: gender.toLowerCase() };
+    }
+    if (id) {
+      where += ` AND s.id = @studentId`;
+      params.studentId = { type: sql.UniqueIdentifier, value: id };
     }
     if (is_active !== undefined && is_active !== '') {
       where += ` AND s.is_active = @isActive`;
@@ -120,14 +124,15 @@ exports.list = async (req, res, next) => {
 };
 
 
+
 // ── GET /api/students/:id ──────────────────────────────────────────────────
 exports.getOne = async (req, res, next) => {
   try {
-    req.query.search = undefined; // isolate query
+    // 🔥 Backend magic: Pass the URL param ID into the query object
+    const queryWithId = { ...req.query, id: req.params.id, limit: 1 };
     
-    // Using list function to get the formatted single student
     const single = await exports.list(
-      { ...req, query: { ...req.query, limit: 1 } }, 
+      { ...req, query: queryWithId }, 
       { status: () => ({ json: data => data }), json: data => data }, 
       next
     );
@@ -141,6 +146,8 @@ exports.getOne = async (req, res, next) => {
     next(err);
   }
 };
+
+
 // ── POST /api/students (Deep Create with Transactions) ────────────────────
 exports.create = async (req, res, next) => {
   try {
