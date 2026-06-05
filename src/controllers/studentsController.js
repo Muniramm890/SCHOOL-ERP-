@@ -4,7 +4,8 @@ const { success, created, notFound, badRequest, paginated } = require('../utils/
 const { audit } = require('../utils/audit');
 const { v4: uuidv4 } = require('uuid');
 
-// ── GET /api/students (Formatted for Frontend Nested Schema) ──────────────
+
+// ── GET /api/students (Formatted for Frontend Nested Schema & STRICT SaaS) ──
 exports.list = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -14,6 +15,7 @@ exports.list = async (req, res, next) => {
     
     const { search, class: gradeId, section, gender, is_active } = req.query;
 
+    // 🛡️ SaaS Core Rule: ALWAYS filter root table by school_id
     let where = `s.school_id = @sid AND s.deleted_at IS NULL`;
     const params = { sid: { type: sql.UniqueIdentifier, value: schoolId } };
 
@@ -33,22 +35,23 @@ exports.list = async (req, res, next) => {
       where += ` AND s.gender = @gender`;
       params.gender = { type: sql.VarChar(20), value: gender };
     }
-    if (is_active !== undefined) {
+    
+    // 🐛 BUG FIXED: Checked for empty string ("") explicitly
+    if (is_active !== undefined && is_active !== '') {
       where += ` AND s.is_active = @isActive`;
       params.isActive = { type: sql.Bit, value: is_active === '1' || is_active === 'true' ? 1 : 0 };
     }
 
-    // 1. COUNT
+    // 1. COUNT (SaaS Hardened Joins)
     const countResult = await queryOne(
       `SELECT COUNT(DISTINCT s.id) AS total FROM students s
        LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active = 1 AND e.deleted_at IS NULL
-       LEFT JOIN sections sc ON sc.id = e.section_id 
-       LEFT JOIN grades g ON g.id = sc.grade_id 
+       LEFT JOIN sections sc ON sc.id = e.section_id AND sc.school_id = @sid
+       LEFT JOIN grades g ON g.id = sc.grade_id AND g.school_id = @sid
        WHERE ${where}`, params
     );
 
-    // 2. DATA (Fetching Guardians and Enrolments together)
-    // 2. DATA (Fetching Guardians and Enrolments together)
+    // 2. DATA (Fetching Guardians and Enrolments together - SaaS Hardened)
     const rawData = await query(
       `SELECT s.*, 
               e.id AS enrolment_id, g.id AS grade_id, e.section_id, e.academic_year_id, e.roll_no,
@@ -58,9 +61,10 @@ exports.list = async (req, res, next) => {
               sfa.status AS fee_status
        FROM students s
        LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active = 1 AND e.deleted_at IS NULL
-       LEFT JOIN sections sc ON sc.id = e.section_id AND sc.deleted_at IS NULL
-       LEFT JOIN grades g ON g.id = sc.grade_id AND g.deleted_at IS NULL
-       LEFT JOIN student_guardians sg1 ON sg1.student_id = s.id AND sg1.is_primary = 1 AND sg1.deleted_at IS NULL
+       -- STRICT SaaS JOINs added below 🛡️
+       LEFT JOIN sections sc ON sc.id = e.section_id AND sc.school_id = @sid AND sc.deleted_at IS NULL
+       LEFT JOIN grades g ON g.id = sc.grade_id AND g.school_id = @sid AND g.deleted_at IS NULL
+       LEFT JOIN student_guardians sg1 ON sg1.student_id = s.id AND sg1.school_id = @sid AND sg1.is_primary = 1 AND sg1.deleted_at IS NULL
        LEFT JOIN (
            SELECT * FROM (
                SELECT *, ROW_NUMBER() OVER(PARTITION BY student_id ORDER BY created_at DESC) as rn 
@@ -73,13 +77,6 @@ exports.list = async (req, res, next) => {
        OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
       { ...params, offset: { type: sql.Int, value: +offset }, limit: { type: sql.Int, value: +limitNum } }
     );
-
-    // Backend response mein total count add karein
-const totalCount = await query(`SELECT COUNT(*) as total FROM students WHERE ${where}`, params);
-return res.json({ 
-  data: rawData.recordset, 
-  total: totalCount.recordset[0].total 
-});
 
     // 🔥 3. FORMAT FOR FRONTEND (Nested Objects)
     const formattedStudents = rawData.recordset.map(row => ({
@@ -95,9 +92,15 @@ return res.json({
       primary_phone: row.g1_phone || null
     }));
 
-    return paginated(res, formattedStudents, countResult.total, pageNum, limitNum);
+    // ✅ FIXED RETURN (Removed the rogue totalCount query causing the crash)
+    return res.json({ 
+      data: formattedStudents, 
+      total: countResult.total 
+    });
+    
   } catch (err) { next(err); }
 };
+
 
 // ── GET /api/students/:id ──────────────────────────────────────────────────
 exports.getOne = async (req, res, next) => {
