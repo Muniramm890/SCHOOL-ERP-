@@ -74,6 +74,13 @@ exports.list = async (req, res, next) => {
       { ...params, offset: { type: sql.Int, value: +offset }, limit: { type: sql.Int, value: +limitNum } }
     );
 
+    // Backend response mein total count add karein
+const totalCount = await query(`SELECT COUNT(*) as total FROM students WHERE ${where}`, params);
+return res.json({ 
+  data: rawData.recordset, 
+  total: totalCount.recordset[0].total 
+});
+
     // 🔥 3. FORMAT FOR FRONTEND (Nested Objects)
     const formattedStudents = rawData.recordset.map(row => ({
       ...row,
