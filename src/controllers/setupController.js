@@ -5,18 +5,20 @@ const { audit } = require('../utils/audit');
 
 // ═══════════════ GRADES / CLASSES ═════════════════════════════════════════
 
+// ═══════════════ GRADES / CLASSES ═════════════════════════════════════════
+
 exports.listGrades = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const grades = await query(
-      `SELECT g.*, 
+      `SELECT g.id, g.name, g.numeric_order, g.stream, g.is_active, g.created_at, g.updated_at, 
               COUNT(DISTINCT sc.id) AS section_count,
               COUNT(DISTINCT e.student_id) AS student_count
        FROM grades g
        LEFT JOIN sections sc ON sc.grade_id = g.id AND sc.school_id = @sid AND sc.deleted_at IS NULL
        LEFT JOIN enrolments e ON e.section_id = sc.id AND e.school_id = @sid AND e.is_active=1 AND e.deleted_at IS NULL
        WHERE g.school_id = @sid AND g.deleted_at IS NULL
-       GROUP BY g.id, g.name, g.numeric_order, g.stream, g.description, g.is_active, g.created_at, g.updated_at, g.deleted_at
+       GROUP BY g.id, g.name, g.numeric_order, g.stream, g.is_active, g.created_at, g.updated_at
        ORDER BY g.numeric_order`,
       { sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
@@ -27,18 +29,17 @@ exports.listGrades = async (req, res, next) => {
 exports.createGrade = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
-    const { name, numeric_order, stream = 'none', description } = req.body;
+    const { name, numeric_order, stream = 'none' } = req.body;
     
     const id = (await query(
-      `INSERT INTO grades (id, school_id, name, numeric_order, stream, description) 
+      `INSERT INTO grades (id, school_id, name, numeric_order, stream) 
        OUTPUT INSERTED.id 
-       VALUES(NEWID(), @sid, @name, @order, @stream, @desc)`,
+       VALUES(NEWID(), @sid, @name, @order, @stream)`,
       { 
         sid: { type: sql.UniqueIdentifier, value: schoolId }, 
         name: { type: sql.NVarChar(100), value: name },
         order: { type: sql.SmallInt, value: Number(numeric_order) || 0 }, 
-        stream: { type: sql.VarChar(50), value: stream },
-        desc: { type: sql.NVarChar(500), value: description || null } 
+        stream: { type: sql.VarChar(50), value: stream }
       }
     )).recordset[0].id;
     
@@ -50,13 +51,13 @@ exports.updateGrade = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { schoolId } = req.user;
-    const { name, numeric_order, stream, description, is_active } = req.body;
+    const { name, numeric_order, stream, is_active } = req.body;
+    
     await query(
       `UPDATE grades 
        SET name=ISNULL(@n,name), 
            numeric_order=ISNULL(@o,numeric_order),
            stream=ISNULL(@s,stream), 
-           description=ISNULL(@d,description),
            is_active=ISNULL(@ia,is_active), 
            updated_at=GETUTCDATE()
        WHERE id=@id AND school_id=@sid AND deleted_at IS NULL`,
@@ -66,13 +67,15 @@ exports.updateGrade = async (req, res, next) => {
         n: { type: sql.NVarChar(100), value: name || null }, 
         o: { type: sql.SmallInt, value: numeric_order ? Number(numeric_order) : null },
         s: { type: sql.VarChar(50), value: stream || null }, 
-        d: { type: sql.NVarChar(500), value: description || null },
         ia: { type: sql.Bit, value: is_active != null ? (is_active ? 1 : 0) : null },
       }
     );
     return success(res, null, 'Grade updated successfully');
   } catch (err) { next(err); }
 };
+
+
+// ═══════════════ SECTIONS ═════════════════════════════════════════════════
 
 // ═══════════════ SECTIONS ═════════════════════════════════════════════════
 
@@ -94,7 +97,7 @@ exports.listSections = async (req, res, next) => {
     }
 
     const sections = await query(
-      `SELECT sc.*, 
+      `SELECT sc.id, sc.school_id, sc.grade_id, sc.academic_year_id, sc.name, sc.max_strength, sc.class_teacher_id, sc.is_active,
               g.name AS grade_name, g.numeric_order,
               u.full_name AS class_teacher_name,
               COUNT(DISTINCT e.student_id) AS student_count
@@ -103,8 +106,7 @@ exports.listSections = async (req, res, next) => {
        LEFT JOIN users u ON u.id = sc.class_teacher_id
        LEFT JOIN enrolments e ON e.section_id = sc.id AND e.school_id = @sid AND e.is_active=1 AND e.deleted_at IS NULL
        WHERE ${where}
-       GROUP BY sc.id, sc.school_id, sc.grade_id, sc.academic_year_id, sc.name, sc.room_number,
-                sc.max_strength, sc.class_teacher_id, sc.is_active, sc.created_at, sc.updated_at, sc.deleted_at,
+       GROUP BY sc.id, sc.school_id, sc.grade_id, sc.academic_year_id, sc.name, sc.max_strength, sc.class_teacher_id, sc.is_active,
                 g.name, g.numeric_order, u.full_name
        ORDER BY g.numeric_order, sc.name`,
       p
@@ -116,18 +118,17 @@ exports.listSections = async (req, res, next) => {
 exports.createSection = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
-    const { grade_id, academic_year_id, name, room_number, max_strength = 40, class_teacher_id } = req.body;
+    const { grade_id, academic_year_id, name, max_strength = 40, class_teacher_id } = req.body;
     
     const res1 = await query(
-      `INSERT INTO sections (id, school_id, grade_id, academic_year_id, name, room_number, max_strength, class_teacher_id)
+      `INSERT INTO sections (id, school_id, grade_id, academic_year_id, name, max_strength, class_teacher_id)
        OUTPUT INSERTED.id 
-       VALUES(NEWID(), @sid, @gid, @ayId, @name, @rn, @ms, @ct)`,
+       VALUES(NEWID(), @sid, @gid, @ayId, @name, @ms, @ct)`,
       {
         sid: { type: sql.UniqueIdentifier, value: schoolId }, 
         gid: { type: sql.UniqueIdentifier, value: grade_id },
         ayId: { type: sql.UniqueIdentifier, value: academic_year_id }, 
         name: { type: sql.NVarChar(50), value: name },
-        rn: { type: sql.NVarChar(50), value: room_number || null }, 
         ms: { type: sql.SmallInt, value: Number(max_strength) },
         ct: { type: sql.UniqueIdentifier, value: class_teacher_id || null },
       }
@@ -152,28 +153,17 @@ exports.listSubjects = async (req, res, next) => {
 exports.createSubject = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
-    const { 
-      name, code, category = 'core', language_medium, is_theory = true, is_practical = false,
-      theory_max_marks = 100, practical_max_marks = 0, passing_marks = 33, description 
-    } = req.body;
+    // Sirf wahi fields accept karein jo DB mein hain
+    const { name, category = 'core' } = req.body;
     
     const r = await query(
-      `INSERT INTO subjects (id, school_id, name, code, category, language_medium, is_theory, is_practical,
-         theory_max_marks, practical_max_marks, passing_marks, description)
+      `INSERT INTO subjects (id, school_id, name, category)
        OUTPUT INSERTED.id 
-       VALUES(NEWID(), @sid, @name, @code, @cat, @lang, @isTh, @isPr, @thMax, @prMax, @pass, @desc)`,
+       VALUES(NEWID(), @sid, @name, @cat)`,
       {
         sid: { type: sql.UniqueIdentifier, value: schoolId }, 
         name: { type: sql.NVarChar(200), value: name },
-        code: { type: sql.NVarChar(50), value: code || null }, 
-        cat: { type: sql.VarChar(50), value: category },
-        lang: { type: sql.NVarChar(50), value: language_medium || 'English' },
-        isTh: { type: sql.Bit, value: is_theory ? 1 : 0 }, 
-        isPr: { type: sql.Bit, value: is_practical ? 1 : 0 },
-        thMax: { type: sql.SmallInt, value: Number(theory_max_marks) }, 
-        prMax: { type: sql.SmallInt, value: Number(practical_max_marks) },
-        pass: { type: sql.SmallInt, value: Number(passing_marks) }, 
-        desc: { type: sql.NVarChar(sql.MAX), value: description || null },
+        cat: { type: sql.VarChar(50), value: category }
       }
     );
     return created(res, { id: r.recordset[0].id }, 'Subject mapped successfully');
