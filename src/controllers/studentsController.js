@@ -48,9 +48,10 @@ exports.list = async (req, res, next) => {
     );
 
     // 2. DATA (Fetching Guardians and Enrolments together)
+    // 2. DATA (Fetching Guardians and Enrolments together)
     const rawData = await query(
       `SELECT s.*, 
-              e.id AS enrolment_id, e.grade_id, e.section_id, e.academic_year_id, e.roll_no,
+              e.id AS enrolment_id, g.id AS grade_id, e.section_id, e.academic_year_id, e.roll_no,
               g.name AS class_name, sc.name AS section_name,
               sg1.relation AS g1_relation, sg1.full_name AS g1_name, sg1.phone AS g1_phone, sg1.email AS g1_email,
               sg2.relation AS g2_relation, sg2.full_name AS g2_name, sg2.phone AS g2_phone, sg2.email AS g2_email,
@@ -70,7 +71,7 @@ exports.list = async (req, res, next) => {
        WHERE ${where}
        ORDER BY g.numeric_order, sc.name, s.first_name
        OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
-      { ...params, offset: { type: sql.Int, value: +offset }, limit: { type: sql.Int, value: +limitNum }  }
+      { ...params, offset: { type: sql.Int, value: +offset }, limit: { type: sql.Int, value: +limitNum } }
     );
 
     // 🔥 3. FORMAT FOR FRONTEND (Nested Objects)
