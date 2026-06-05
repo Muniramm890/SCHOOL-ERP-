@@ -6,14 +6,15 @@ const { v4: uuidv4 } = require('uuid');
 
 
 // ── GET /api/students (Formatted for Frontend Nested Schema & STRICT SaaS) ──
+// ── GET /api/students (Formatted for Frontend Nested Schema & STRICT SaaS) ──
 exports.list = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const pageNum = parseInt(req.query.page, 10) || 1;
-    const limitNum = parseInt(req.query.limit, 10) || 20;
+    const limitNum = parseInt(req.query.limit, 10) || 50; // Aligned with frontend PAGE_SIZE = 50
     const offset = (pageNum - 1) * limitNum;
     
-    const { search, class: gradeId, section, gender, is_active } = req.query;
+    const { search, grade_id, section_id, gender, is_active, sort } = req.query;
 
     // 🛡️ SaaS Core Rule: ALWAYS filter root table by school_id
     let where = `s.school_id = @sid AND s.deleted_at IS NULL`;
@@ -23,35 +24,45 @@ exports.list = async (req, res, next) => {
       where += ` AND (s.first_name + ' ' + ISNULL(s.last_name, '') LIKE @search OR s.admission_no LIKE @search)`;
       params.search = { type: sql.NVarChar(255), value: `%${search}%` };
     }
-    if (gradeId) {
+    if (grade_id) {
       where += ` AND g.id = @gradeId`;
-      params.gradeId = { type: sql.UniqueIdentifier, value: gradeId };
+      params.gradeId = { type: sql.UniqueIdentifier, value: grade_id };
     }
-    if (section) {
+    if (section_id) {
       where += ` AND sc.id = @section`;
-      params.section = { type: sql.UniqueIdentifier, value: section };
+      params.section = { type: sql.UniqueIdentifier, value: section_id };
     }
     if (gender) {
-      where += ` AND s.gender = @gender`;
-      params.gender = { type: sql.VarChar(20), value: gender };
+      // Smart check for gender filter if it comes from UI
+      where += ` AND LOWER(s.gender) IN (@gender, CASE WHEN @gender='Male' THEN 'boy' ELSE 'girl' END)`;
+      params.gender = { type: sql.VarChar(20), value: gender.toLowerCase() };
     }
-    
-    // 🐛 BUG FIXED: Checked for empty string ("") explicitly
     if (is_active !== undefined && is_active !== '') {
       where += ` AND s.is_active = @isActive`;
       params.isActive = { type: sql.Bit, value: is_active === '1' || is_active === 'true' ? 1 : 0 };
     }
 
-    // 1. COUNT (SaaS Hardened Joins)
+    // 🔥 Schema-Matched Aggregation (Handles 'GIRL' / 'BOY' anomaly from bulk imports)
     const countResult = await queryOne(
-      `SELECT COUNT(DISTINCT s.id) AS total FROM students s
+      `SELECT 
+          COUNT(DISTINCT s.id) AS total,
+          SUM(CASE WHEN s.is_active = 1 THEN 1 ELSE 0 END) AS active_count,
+          SUM(CASE WHEN LOWER(s.gender) IN ('male', 'boy', 'm') THEN 1 ELSE 0 END) AS male_count,
+          SUM(CASE WHEN LOWER(s.gender) IN ('female', 'girl', 'f') THEN 1 ELSE 0 END) AS female_count
+       FROM students s
        LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active = 1 AND e.deleted_at IS NULL
        LEFT JOIN sections sc ON sc.id = e.section_id AND sc.school_id = @sid
        LEFT JOIN grades g ON g.id = sc.grade_id AND g.school_id = @sid
        WHERE ${where}`, params
     );
 
-    // 2. DATA (Fetching Guardians and Enrolments together - SaaS Hardened)
+    // 🔥 Smart Roll Number Sorting (Since roll_no is NVARCHAR(50) in DB)
+    let orderByClause = `ORDER BY ISNULL(g.numeric_order, 999), sc.name, s.first_name`;
+    if (sort === 'roll_no') {
+        orderByClause = `ORDER BY ISNULL(TRY_CAST(e.roll_no AS INT), 999999) ASC, s.first_name ASC`;
+    }
+
+    // 2. DATA Fetch (Exact matching with your DB schema columns)
     const rawData = await query(
       `SELECT s.*, 
               e.id AS enrolment_id, g.id AS grade_id, e.section_id, e.academic_year_id, e.roll_no,
@@ -61,24 +72,26 @@ exports.list = async (req, res, next) => {
               sfa.status AS fee_status
        FROM students s
        LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active = 1 AND e.deleted_at IS NULL
-       -- STRICT SaaS JOINs added below 🛡️
        LEFT JOIN sections sc ON sc.id = e.section_id AND sc.school_id = @sid AND sc.deleted_at IS NULL
        LEFT JOIN grades g ON g.id = sc.grade_id AND g.school_id = @sid AND g.deleted_at IS NULL
+       -- Primary Guardian Join
        LEFT JOIN student_guardians sg1 ON sg1.student_id = s.id AND sg1.school_id = @sid AND sg1.is_primary = 1 AND sg1.deleted_at IS NULL
+       -- Secondary Guardian Join (Takes the latest one)
        LEFT JOIN (
            SELECT * FROM (
                SELECT *, ROW_NUMBER() OVER(PARTITION BY student_id ORDER BY created_at DESC) as rn 
                FROM student_guardians WHERE is_primary = 0 AND deleted_at IS NULL
            ) tmp WHERE rn = 1
        ) sg2 ON sg2.student_id = s.id AND sg2.school_id = @sid
-       LEFT JOIN student_fee_accounts sfa ON sfa.student_id = s.id AND sfa.school_id = @sid
+       -- Fee Accounts Join
+       LEFT JOIN student_fee_accounts sfa ON sfa.student_id = s.id AND sfa.school_id = @sid AND sfa.deleted_at IS NULL
        WHERE ${where}
-       ORDER BY g.numeric_order, sc.name, s.first_name
+       ${orderByClause}
        OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
       { ...params, offset: { type: sql.Int, value: +offset }, limit: { type: sql.Int, value: +limitNum } }
     );
 
-    // 🔥 3. FORMAT FOR FRONTEND (Nested Objects)
+    // 3. FORMAT FOR FRONTEND
     const formattedStudents = rawData.recordset.map(row => ({
       ...row,
       enrolment: row.grade_id ? {
@@ -92,23 +105,18 @@ exports.list = async (req, res, next) => {
       primary_phone: row.g1_phone || null
     }));
 
-    // ✅ FIXED RETURN (Removed the rogue totalCount query causing the crash)
+    // 4. RETURN Payload (Including the new stats object for your UI)
     return res.json({ 
       data: formattedStudents, 
-      total: countResult.total 
+      total: countResult.total || 0,
+      stats: {
+          active: countResult.active_count || 0,
+          male: countResult.male_count || 0,
+          female: countResult.female_count || 0
+      }
     });
     
   } catch (err) { next(err); }
-};
-
-
-// ── GET /api/students/:id ──────────────────────────────────────────────────
-exports.getOne = async (req, res, next) => {
-  // Logic remains similar to list, simplified for brevity.
-  req.query.search = undefined; // isolate query
-  const single = await exports.list({ ...req, query: { ...req.query, limit: 1 } }, { status: () => ({ json: data => data }) }, next);
-  if (!single || !single.data || single.data.length === 0) return notFound(res, 'Student not found');
-  return success(res, single.data[0]);
 };
 
 // ── POST /api/students (Deep Create with Transactions) ────────────────────
