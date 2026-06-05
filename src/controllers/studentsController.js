@@ -119,6 +119,28 @@ exports.list = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+
+// ── GET /api/students/:id ──────────────────────────────────────────────────
+exports.getOne = async (req, res, next) => {
+  try {
+    req.query.search = undefined; // isolate query
+    
+    // Using list function to get the formatted single student
+    const single = await exports.list(
+      { ...req, query: { ...req.query, limit: 1 } }, 
+      { status: () => ({ json: data => data }), json: data => data }, 
+      next
+    );
+    
+    if (!single || !single.data || single.data.length === 0) {
+        return notFound(res, 'Student not found');
+    }
+    
+    return success(res, single.data[0]);
+  } catch (err) {
+    next(err);
+  }
+};
 // ── POST /api/students (Deep Create with Transactions) ────────────────────
 exports.create = async (req, res, next) => {
   try {
