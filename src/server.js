@@ -109,9 +109,7 @@ const start = async () => {
       logger.info(`🚀 School ERP API running on port ${PORT} [${process.env.NODE_ENV}]`);
       logger.info(`📡 Azure SQL: ${process.env.DB_SERVER}/${process.env.DB_DATABASE}`);
       
-      // 🔥 Yahan call karein: Server start hone ke BAAD heartbeat shuru karein
-      keepAlive(); 
-      setInterval(keepAlive, 4 * 60 * 1000); // Har 4 minute
+      
     });
     
   } catch (err) {
