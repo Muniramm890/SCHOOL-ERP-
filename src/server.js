@@ -99,16 +99,7 @@ app.use(errorHandler);
 // ── Start & Heartbeat ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 
-// Heartbeat Function
-const keepAlive = async () => {
-  try {
-    const pool = await getPool(); // Fetch the active pool
-    await pool.request().query('SELECT 1'); // Ping the DB
-    logger.info("💚 Heartbeat: SQL Server & Backend are active.");
-  } catch (err) {
-    logger.error("💔 Heartbeat failed: " + err.message);
-  }
-};
+// Heartbeat Funct   
 
 const start = async () => {
   try {
