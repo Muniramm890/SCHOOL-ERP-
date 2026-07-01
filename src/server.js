@@ -121,5 +121,5 @@ const start = async () => {
 // Application kick-off
 start();
 
-module.exports = app; // for testing
+module.exports = app; // for testing keep alive removed
 
