@@ -26,7 +26,6 @@ exports.list = async (req, res, next) => {
   try {
     const schoolId = getSchoolId(req);
     
-    // JOINing users, school_members, and staff_profiles accurately
     const sqlQuery = `
       SELECT 
         u.id AS user_id, u.full_name, u.email, u.phone, u.gender, u.avatar_url,
@@ -41,7 +40,12 @@ exports.list = async (req, res, next) => {
       ORDER BY u.full_name ASC
     `;
 
-    const teachers = await query(sqlQuery, { schoolId });
+    // 🎯 EXACT FIX: Variable ka Data Type explicitly define kiya
+    const params = { 
+      schoolId: { type: sql.UniqueIdentifier, value: schoolId } 
+    };
+
+    const teachers = await query(sqlQuery, params);
     return success(res, 'Teachers fetched successfully', teachers);
   } catch (err) {
     next(err);
@@ -67,7 +71,13 @@ exports.getOne = async (req, res, next) => {
         AND sm.deleted_at IS NULL
     `;
 
-    const teacher = await queryOne(sqlQuery, { schoolId, userId });
+    // 🎯 EXACT FIX: Variables ka Data Type explicitly define kiya
+    const params = {
+      schoolId: { type: sql.UniqueIdentifier, value: schoolId },
+      userId: { type: sql.UniqueIdentifier, value: userId }
+    };
+
+    const teacher = await queryOne(sqlQuery, params);
     if (!teacher) return notFound(res, 'Teacher not found in this school');
 
     return success(res, 'Teacher details fetched', teacher);
