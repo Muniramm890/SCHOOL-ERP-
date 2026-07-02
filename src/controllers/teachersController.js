@@ -1,9 +1,9 @@
 // src/controllers/teachersController.js
+
 const { query, queryOne, withTransaction, sql } = require('../config/db');
-const { success, created, notFound, badRequest, paginated } = require('../utils/response');
+const { success, created, notFound, badRequest } = require('../utils/response');
 const { v4: uuidv4 } = require('uuid');
 const bcrypt = require('bcryptjs');
-
 
 // ── Helper: Get School ID (Ultimate Fallback Version) ─────────────────────
 const getSchoolId = (req) => {
@@ -40,10 +40,8 @@ exports.list = async (req, res, next) => {
       ORDER BY u.full_name ASC
     `;
 
-    // 🎯 EXACT FIX: Variable ka Data Type explicitly define kiya
-    const params = { 
-      schoolId: { type: sql.UniqueIdentifier, value: schoolId } 
-    };
+    // 🎯 Explicit SQL Types applied
+    const params = { schoolId: { type: sql.UniqueIdentifier, value: schoolId } };
 
     const teachers = await query(sqlQuery, params);
     return success(res, 'Teachers fetched successfully', teachers);
@@ -71,7 +69,7 @@ exports.getOne = async (req, res, next) => {
         AND sm.deleted_at IS NULL
     `;
 
-    // 🎯 EXACT FIX: Variables ka Data Type explicitly define kiya
+    // 🎯 Explicit SQL Types applied
     const params = {
       schoolId: { type: sql.UniqueIdentifier, value: schoolId },
       userId: { type: sql.UniqueIdentifier, value: userId }
@@ -86,7 +84,6 @@ exports.getOne = async (req, res, next) => {
   }
 };
 
-
 // ── POST /api/teachers ────────────────────────────────────────────────────
 exports.create = async (req, res, next) => {
   try {
@@ -100,60 +97,53 @@ exports.create = async (req, res, next) => {
     const smId = uuidv4();
     const spId = uuidv4();
     
-    // Default password agar provide nahi kiya
     const hash = await bcrypt.hash(password || 'teacher123', 10);
 
-    // ✅ SAFE FALLBACKS: Prevent "reading 'type'" crash by avoiding undefined/null
-    const safePhone = phone || "";
-    const safeGender = gender || "";
-    const safeEmpCode = employee_code || "";
-    const safeJoinDate = join_date || null; // SQL handles null dates safely
-    const safeDept = department || "";
-    const safeDesig = designation || "";
-    const safeQual = qualification || "";
-    const safeExp = Number(experience_years) || 0;
+    // ✅ Smart Gender Sanitization (Bypasses SQL CHECK Constraint errors)
+    let finalGender = gender ? String(gender).trim() : 'Male';
+    finalGender = finalGender.charAt(0).toUpperCase() + finalGender.slice(1).toLowerCase();
+    if (!['Male', 'Female', 'Other'].includes(finalGender)) finalGender = 'Male';
 
-    // Transaction zaroori hai taaki teeno tables mein data ek saath insert ho
-    await withTransaction(async (db) => {
-      // 1. Insert into users
-      await db.request()
-        .input('id', userId)
-        .input('full_name', full_name)
-        .input('email', email)
-        .input('phone', safePhone)
-        .input('gender', safeGender)
-        .input('password', hash)
-        .query(`
-          INSERT INTO users (id, full_name, email, phone, gender, password)
-          VALUES (@id, @full_name, @email, @phone, @gender, @password)
-        `);
+    await withTransaction(async (tx) => {
+      // 1. Insert into users (🔥 Typed exactly like studentsController)
+      const r1 = tx.request();
+      r1.input('id', sql.UniqueIdentifier, userId);
+      r1.input('full_name', sql.NVarChar(255), full_name);
+      r1.input('email', sql.NVarChar(255), email);
+      r1.input('phone', sql.NVarChar(50), phone || null);
+      r1.input('gender', sql.VarChar(20), finalGender);
+      r1.input('password', sql.NVarChar(255), hash);
+      await r1.query(`
+        INSERT INTO users (id, full_name, email, phone, gender, password)
+        VALUES (@id, @full_name, @email, @phone, @gender, @password)
+      `);
 
-      // 2. Insert into school_members (Link user with school)
-      await db.request()
-        .input('id', smId)
-        .input('school_id', schoolId)
-        .input('user_id', userId)
-        .input('role', 'teacher')
-        .input('employee_code', safeEmpCode)
-        .input('join_date', safeJoinDate)
-        .query(`
-          INSERT INTO school_members (id, school_id, user_id, role, employee_code, join_date)
-          VALUES (@id, @school_id, @user_id, @role, @employee_code, @join_date)
-        `);
+      // 2. Insert into school_members
+      const r2 = tx.request();
+      r2.input('id', sql.UniqueIdentifier, smId);
+      r2.input('school_id', sql.UniqueIdentifier, schoolId);
+      r2.input('user_id', sql.UniqueIdentifier, userId);
+      r2.input('role', sql.VarChar(50), 'teacher');
+      r2.input('employee_code', sql.NVarChar(100), employee_code || null);
+      r2.input('join_date', sql.Date, join_date === '' ? null : join_date || null);
+      await r2.query(`
+        INSERT INTO school_members (id, school_id, user_id, role, employee_code, join_date)
+        VALUES (@id, @school_id, @user_id, @role, @employee_code, @join_date)
+      `);
 
-      // 3. Insert into staff_profiles (Extra details)
-      await db.request()
-        .input('id', spId)
-        .input('school_id', schoolId)
-        .input('user_id', userId)
-        .input('department', safeDept)
-        .input('designation', safeDesig)
-        .input('qualification', safeQual)
-        .input('experience_years', safeExp)
-        .query(`
-          INSERT INTO staff_profiles (id, school_id, user_id, department, designation, qualification, experience_years)
-          VALUES (@id, @school_id, @user_id, @department, @designation, @qualification, @experience_years)
-        `);
+      // 3. Insert into staff_profiles
+      const r3 = tx.request();
+      r3.input('id', sql.UniqueIdentifier, spId);
+      r3.input('school_id', sql.UniqueIdentifier, schoolId);
+      r3.input('user_id', sql.UniqueIdentifier, userId);
+      r3.input('department', sql.NVarChar(100), department || null);
+      r3.input('designation', sql.NVarChar(100), designation || null);
+      r3.input('qualification', sql.NVarChar(255), qualification || null);
+      r3.input('experience_years', sql.SmallInt, Number(experience_years) || 0);
+      await r3.query(`
+        INSERT INTO staff_profiles (id, school_id, user_id, department, designation, qualification, experience_years)
+        VALUES (@id, @school_id, @user_id, @department, @designation, @qualification, @experience_years)
+      `);
     });
 
     return created(res, 'Teacher created successfully', { user_id: userId });
@@ -172,38 +162,34 @@ exports.update = async (req, res, next) => {
     const { userId } = req.params;
     const { full_name, phone, gender, employee_code, department, designation, is_active } = req.body;
 
-    // ✅ SAFE FALLBACKS: Prevent "reading 'type'" crash during updates
-    const safePhone = phone || "";
-    const safeGender = gender || "";
-    const safeEmpCode = employee_code || "";
-    const safeDept = department || "";
-    const safeDesig = designation || "";
-    const safeIsActive = is_active === undefined ? true : !!is_active;
+    let finalGender = gender ? String(gender).trim() : 'Male';
+    finalGender = finalGender.charAt(0).toUpperCase() + finalGender.slice(1).toLowerCase();
+    if (!['Male', 'Female', 'Other'].includes(finalGender)) finalGender = 'Male';
 
-    await withTransaction(async (db) => {
+    await withTransaction(async (tx) => {
       // Update users table
-      await db.request()
-        .input('userId', userId)
-        .input('full_name', full_name)
-        .input('phone', safePhone)
-        .input('gender', safeGender)
-        .query(`UPDATE users SET full_name = @full_name, phone = @phone, gender = @gender, updated_at = GETUTCDATE() WHERE id = @userId`);
+      const r1 = tx.request();
+      r1.input('userId', sql.UniqueIdentifier, userId);
+      r1.input('full_name', sql.NVarChar(255), full_name);
+      r1.input('phone', sql.NVarChar(50), phone || null);
+      r1.input('gender', sql.VarChar(20), finalGender);
+      await r1.query(`UPDATE users SET full_name = @full_name, phone = @phone, gender = @gender, updated_at = GETUTCDATE() WHERE id = @userId`);
 
       // Update school_members
-      await db.request()
-        .input('schoolId', schoolId)
-        .input('userId', userId)
-        .input('employee_code', safeEmpCode)
-        .input('is_active', safeIsActive)
-        .query(`UPDATE school_members SET employee_code = @employee_code, is_active = @is_active, updated_at = GETUTCDATE() WHERE user_id = @userId AND school_id = @schoolId`);
+      const r2 = tx.request();
+      r2.input('schoolId', sql.UniqueIdentifier, schoolId);
+      r2.input('userId', sql.UniqueIdentifier, userId);
+      r2.input('employee_code', sql.NVarChar(100), employee_code || null);
+      r2.input('is_active', sql.Bit, is_active !== false ? 1 : 0);
+      await r2.query(`UPDATE school_members SET employee_code = @employee_code, is_active = @is_active, updated_at = GETUTCDATE() WHERE user_id = @userId AND school_id = @schoolId`);
 
       // Update staff_profiles
-      await db.request()
-        .input('schoolId', schoolId)
-        .input('userId', userId)
-        .input('department', safeDept)
-        .input('designation', safeDesig)
-        .query(`UPDATE staff_profiles SET department = @department, designation = @designation, updated_at = GETUTCDATE() WHERE user_id = @userId AND school_id = @schoolId`);
+      const r3 = tx.request();
+      r3.input('schoolId', sql.UniqueIdentifier, schoolId);
+      r3.input('userId', sql.UniqueIdentifier, userId);
+      r3.input('department', sql.NVarChar(100), department || null);
+      r3.input('designation', sql.NVarChar(100), designation || null);
+      await r3.query(`UPDATE staff_profiles SET department = @department, designation = @designation, updated_at = GETUTCDATE() WHERE user_id = @userId AND school_id = @schoolId`);
     });
 
     return success(res, 'Teacher updated successfully');
@@ -218,14 +204,19 @@ exports.remove = async (req, res, next) => {
     const schoolId = getSchoolId(req);
     const { userId } = req.params;
 
-    // SaaS Soft delete: Hum sirf school_members se delete kar rahe hain (School se naata tod rahe hain)
     const sqlQuery = `
       UPDATE school_members 
       SET is_active = 0, deleted_at = GETUTCDATE() 
       WHERE user_id = @userId AND school_id = @schoolId
     `;
     
-    await query(sqlQuery, { userId, schoolId });
+    // 🎯 Explicit SQL Types applied
+    const params = {
+      schoolId: { type: sql.UniqueIdentifier, value: schoolId },
+      userId: { type: sql.UniqueIdentifier, value: userId }
+    };
+
+    await query(sqlQuery, params);
     return success(res, 'Teacher removed from school successfully');
   } catch (err) {
     next(err);
@@ -238,14 +229,20 @@ exports.assignClassTeacher = async (req, res, next) => {
     const schoolId = getSchoolId(req);
     const { sectionId, teacherUserId } = req.body;
 
-    // Sections table mein class_teacher_id update karenge
     const sqlQuery = `
       UPDATE sections 
       SET class_teacher_id = @teacherUserId, updated_at = GETUTCDATE()
       WHERE id = @sectionId AND school_id = @schoolId
     `;
 
-    await query(sqlQuery, { sectionId, teacherUserId, schoolId });
+    // 🎯 Explicit SQL Types applied
+    const params = {
+      schoolId: { type: sql.UniqueIdentifier, value: schoolId },
+      sectionId: { type: sql.UniqueIdentifier, value: sectionId },
+      teacherUserId: { type: sql.UniqueIdentifier, value: teacherUserId || null }
+    };
+
+    await query(sqlQuery, params);
     return success(res, 'Class teacher assigned successfully');
   } catch (err) {
     next(err);
@@ -256,7 +253,7 @@ exports.assignClassTeacher = async (req, res, next) => {
 exports.getLookups = async (req, res, next) => {
   try {
     const schoolId = getSchoolId(req);
-    // Dropdown list ke liye choti query
+    
     const sqlQuery = `
       SELECT u.id AS user_id, u.full_name, sm.employee_code
       FROM school_members sm
@@ -264,7 +261,9 @@ exports.getLookups = async (req, res, next) => {
       WHERE sm.school_id = @schoolId AND sm.role = 'teacher' AND sm.is_active = 1 AND sm.deleted_at IS NULL
       ORDER BY u.full_name ASC
     `;
-    const list = await query(sqlQuery, { schoolId });
+
+    const params = { schoolId: { type: sql.UniqueIdentifier, value: schoolId } };
+    const list = await query(sqlQuery, params);
     return success(res, 'Lookup fetched', list);
   } catch (err) {
     next(err);
