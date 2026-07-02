@@ -76,6 +76,7 @@ exports.getOne = async (req, res, next) => {
   }
 };
 
+
 // ── POST /api/teachers ────────────────────────────────────────────────────
 exports.create = async (req, res, next) => {
   try {
@@ -92,6 +93,16 @@ exports.create = async (req, res, next) => {
     // Default password agar provide nahi kiya
     const hash = await bcrypt.hash(password || 'teacher123', 10);
 
+    // ✅ SAFE FALLBACKS: Prevent "reading 'type'" crash by avoiding undefined/null
+    const safePhone = phone || "";
+    const safeGender = gender || "";
+    const safeEmpCode = employee_code || "";
+    const safeJoinDate = join_date || null; // SQL handles null dates safely
+    const safeDept = department || "";
+    const safeDesig = designation || "";
+    const safeQual = qualification || "";
+    const safeExp = Number(experience_years) || 0;
+
     // Transaction zaroori hai taaki teeno tables mein data ek saath insert ho
     await withTransaction(async (db) => {
       // 1. Insert into users
@@ -99,8 +110,8 @@ exports.create = async (req, res, next) => {
         .input('id', userId)
         .input('full_name', full_name)
         .input('email', email)
-        .input('phone', phone)
-        .input('gender', gender)
+        .input('phone', safePhone)
+        .input('gender', safeGender)
         .input('password', hash)
         .query(`
           INSERT INTO users (id, full_name, email, phone, gender, password)
@@ -113,8 +124,8 @@ exports.create = async (req, res, next) => {
         .input('school_id', schoolId)
         .input('user_id', userId)
         .input('role', 'teacher')
-        .input('employee_code', employee_code)
-        .input('join_date', join_date)
+        .input('employee_code', safeEmpCode)
+        .input('join_date', safeJoinDate)
         .query(`
           INSERT INTO school_members (id, school_id, user_id, role, employee_code, join_date)
           VALUES (@id, @school_id, @user_id, @role, @employee_code, @join_date)
@@ -125,10 +136,10 @@ exports.create = async (req, res, next) => {
         .input('id', spId)
         .input('school_id', schoolId)
         .input('user_id', userId)
-        .input('department', department)
-        .input('designation', designation)
-        .input('qualification', qualification)
-        .input('experience_years', experience_years || 0)
+        .input('department', safeDept)
+        .input('designation', safeDesig)
+        .input('qualification', safeQual)
+        .input('experience_years', safeExp)
         .query(`
           INSERT INTO staff_profiles (id, school_id, user_id, department, designation, qualification, experience_years)
           VALUES (@id, @school_id, @user_id, @department, @designation, @qualification, @experience_years)
@@ -137,7 +148,7 @@ exports.create = async (req, res, next) => {
 
     return created(res, 'Teacher created successfully', { user_id: userId });
   } catch (err) {
-    if (err.message.includes('UNIQUE KEY')) {
+    if (err.message && err.message.includes('UNIQUE KEY')) {
       return badRequest(res, 'Email or Employee Code already exists');
     }
     next(err);
@@ -151,29 +162,37 @@ exports.update = async (req, res, next) => {
     const { userId } = req.params;
     const { full_name, phone, gender, employee_code, department, designation, is_active } = req.body;
 
+    // ✅ SAFE FALLBACKS: Prevent "reading 'type'" crash during updates
+    const safePhone = phone || "";
+    const safeGender = gender || "";
+    const safeEmpCode = employee_code || "";
+    const safeDept = department || "";
+    const safeDesig = designation || "";
+    const safeIsActive = is_active === undefined ? true : !!is_active;
+
     await withTransaction(async (db) => {
       // Update users table
       await db.request()
         .input('userId', userId)
         .input('full_name', full_name)
-        .input('phone', phone)
-        .input('gender', gender)
+        .input('phone', safePhone)
+        .input('gender', safeGender)
         .query(`UPDATE users SET full_name = @full_name, phone = @phone, gender = @gender, updated_at = GETUTCDATE() WHERE id = @userId`);
 
       // Update school_members
       await db.request()
         .input('schoolId', schoolId)
         .input('userId', userId)
-        .input('employee_code', employee_code)
-        .input('is_active', is_active)
+        .input('employee_code', safeEmpCode)
+        .input('is_active', safeIsActive)
         .query(`UPDATE school_members SET employee_code = @employee_code, is_active = @is_active, updated_at = GETUTCDATE() WHERE user_id = @userId AND school_id = @schoolId`);
 
       // Update staff_profiles
       await db.request()
         .input('schoolId', schoolId)
         .input('userId', userId)
-        .input('department', department)
-        .input('designation', designation)
+        .input('department', safeDept)
+        .input('designation', safeDesig)
         .query(`UPDATE staff_profiles SET department = @department, designation = @designation, updated_at = GETUTCDATE() WHERE user_id = @userId AND school_id = @schoolId`);
     });
 
