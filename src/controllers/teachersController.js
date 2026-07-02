@@ -229,5 +229,12 @@ exports.getLookups = async (req, res, next) => {
   }
 };
 
-// ⚠️ NOTE: Aapke diye gaye database schema report mein "teacher_subjects" ya "timetable" naam ki table nahi mili.
-// Isliye assignSubject aur removeAssignment function maine yahan omit kar diye hain. Agar aapne DB mein aisi table banayi hai, toh uska schema batayein.
+// ── POST /api/teachers/assignments ────────────────────────────────────────
+exports.assignSubject = async (req, res, next) => {
+    return res.status(501).json({ success: false, message: "assignSubject API is not implemented yet." });
+};
+
+// ── DELETE /api/teachers/assignments/:assignmentId ────────────────────────
+exports.removeAssignment = async (req, res, next) => {
+    return res.status(501).json({ success: false, message: "removeAssignment API is not implemented yet." });
+};
