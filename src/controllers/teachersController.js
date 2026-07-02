@@ -4,9 +4,22 @@ const { success, created, notFound, badRequest, paginated } = require('../utils/
 const { v4: uuidv4 } = require('uuid');
 const bcrypt = require('bcryptjs');
 
-// ── Helper: Get School ID ─────────────────────────────────────────────────
-// Maan kar chal rahe hain ki auth middleware school id req.user.school mein daalta hai (jaise logs mein tha)
-const getSchoolId = (req) => req.user.school; 
+
+// ── Helper: Get School ID (Ultimate Fallback Version) ─────────────────────
+const getSchoolId = (req) => {
+  if (req.headers && req.headers['x-school-id']) return req.headers['x-school-id'];
+  if (req.school) return req.school;
+  if (req.schoolId) return req.schoolId;
+  if (req.school_id) return req.school_id;
+  if (req.user) {
+    if (req.user.school) return req.user.school;
+    if (req.user.school_id) return req.user.school_id;
+    if (req.user.schoolId) return req.user.schoolId;
+  }
+  if (req.body && req.body.school_id) return req.body.school_id;
+  if (req.query && req.query.school_id) return req.query.school_id;
+  return null;
+};
 
 // ── GET /api/teachers (Optimized & SaaS Scalable) ─────────────────────────
 exports.list = async (req, res, next) => {
