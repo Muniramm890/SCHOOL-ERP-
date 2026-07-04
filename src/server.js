@@ -96,7 +96,7 @@ app.use((req, res) => {
 // ── Global error handler ───────────────────────────────────────────────
 app.use(errorHandler);
 
-// ── Start ──────────────────────────────────────────────────────────────
+
 // ── Start & Heartbeat ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 
@@ -104,7 +104,7 @@ const PORT = process.env.PORT || 5000;
 
 const start = async () => {
   try {
-    await getPool(); // Warm up DB pool on startup
+    await getPool(); 
     
     app.listen(PORT, () => {
       logger.info(`🚀 School ERP API running on port ${PORT} [${process.env.NODE_ENV}]`);
@@ -119,8 +119,8 @@ const start = async () => {
   }
 };
 
-// Application kick-off
+
 start();
 
-module.exports = app; // for testing keep alive removed
+module.exports = app; 
 
