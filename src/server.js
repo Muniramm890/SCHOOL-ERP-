@@ -86,7 +86,7 @@ app.use(`${API}/quick-tests`,   require('./routes/quickTests'));
 app.use(`${API}/exams`,         require('./routes/exams'));
 app.use(`${API}/notices`,       require('./routes/notices'));
 app.use(`${API}/homework`,      require('./routes/homework'));
-app.use('/api/attendance',authenticate,   require('./routes/attendanceRoutes'));
+app.use('/api/attendance',authenticate,   require('./routes/attendance'));
 
 // ── 404 ────────────────────────────────────────────────────────────────
 app.use((req, res) => {
