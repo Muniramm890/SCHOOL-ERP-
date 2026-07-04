@@ -78,7 +78,6 @@ app.use(`${API}/dashboard`,     require('./routes/dashboard'));
 app.use(`${API}/setup`,         require('./routes/setup'));
 app.use(`${API}/students`,      require('./routes/students'));
 app.use(`${API}/teachers`,      require('./routes/teachers'));
-app.use(`${API}/attendance`,    require('./routes/attendance'));
 app.use(`${API}/fees`,          require('./routes/fees'));
 app.use(`${API}/results`,       require('./routes/results'));
 app.use(`${API}/timetables`,    require('./routes/timetables'));
@@ -86,6 +85,7 @@ app.use(`${API}/quick-tests`,   require('./routes/quickTests'));
 app.use(`${API}/exams`,         require('./routes/exams'));
 app.use(`${API}/notices`,       require('./routes/notices'));
 app.use(`${API}/homework`,      require('./routes/homework'));
+app.use('/api/attendance', authenticate, require('./routes/attendanceRoutes'));
 
 // ── 404 ────────────────────────────────────────────────────────────────
 app.use((req, res) => {
