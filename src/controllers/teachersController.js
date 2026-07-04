@@ -8,8 +8,8 @@ const bcrypt = require('bcryptjs');
 exports.list = async (req, res, next) => {
   try {
     // 🎯 Use Student Module pattern: Direct access from req.user
-    const { schoolId } = req.user; 
-    
+    const { schoolId } = req.user;
+
     const sqlQuery = `
       SELECT 
         u.id AS user_id, u.full_name, u.email, u.phone, u.gender, u.avatar_url,
@@ -25,9 +25,21 @@ exports.list = async (req, res, next) => {
     `;
 
     const params = { sid: { type: sql.UniqueIdentifier, value: schoolId } };
-    const teachers = await query(sqlQuery, params);
-    
-    return success(res, 'Teachers fetched successfully', teachers || []);
+    const result = await query(sqlQuery, params);
+
+    // 🔴 FIX: `query()` returns a mssql recordset object ({ recordset: [...] }),
+    // NOT a plain array. Previous code passed `teachers` (which could be that
+    // wrapper object) straight into success() in the WRONG argument slot too.
+    // Normalize to a plain array here so the frontend always gets `data: [...]`.
+    const teachers = result?.recordset || result || [];
+
+    // ✅ FIX: success(res, data, message) — data first, message second.
+    // Old code had these swapped: success(res, 'Teachers fetched successfully', teachers || [])
+    // which put the STRING into `data` and the ARRAY into `message`, so the
+    // frontend's `Array.isArray(tRes?.data)` check always failed and the
+    // teacher list rendered empty even though DB inserts (incl. bulk import)
+    // were succeeding.
+    return success(res, teachers, 'Teachers fetched successfully');
   } catch (err) { next(err); }
 };
 
@@ -39,7 +51,7 @@ exports.getOne = async (req, res, next) => {
 
     const sqlQuery = `
       SELECT 
-        u.id AS user_id, u.full_name, u.email, u.phone, u.gender, u.date_of_birth,
+        u.id AS user_id, u.full_name, u.email, u.phone, u.gender, u.date_of_birth, u.avatar_url,
         sm.employee_code, sm.join_date, sm.is_active, sm.role,
         sp.department, sp.designation, sp.qualification, sp.experience_years
       FROM school_members sm
@@ -58,7 +70,11 @@ exports.getOne = async (req, res, next) => {
     const teacher = await queryOne(sqlQuery, params);
     if (!teacher) return notFound(res, 'Teacher not found');
 
-    return success(res, 'Teacher details fetched', teacher);
+    // ✅ FIX: was success(res, 'Teacher details fetched', teacher) — swapped.
+    // Frontend's openView() does `res?.data || t` — with the bug, `res.data`
+    // was the string message, so it silently fell back to stale list-row data
+    // instead of the freshly fetched profile.
+    return success(res, teacher, 'Teacher details fetched');
   } catch (err) { next(err); }
 };
 
@@ -165,7 +181,7 @@ exports.remove = async (req, res, next) => {
       SET is_active = 0, deleted_at = GETUTCDATE(), updated_at = GETUTCDATE() 
       WHERE user_id = @uid AND school_id = @sid
     `;
-    
+
     const params = {
       sid: { type: sql.UniqueIdentifier, value: schoolId },
       uid: { type: sql.UniqueIdentifier, value: userId }
@@ -203,7 +219,7 @@ exports.assignClassTeacher = async (req, res, next) => {
 exports.getLookups = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
-    
+
     const sqlQuery = `
       SELECT u.id AS user_id, u.full_name, sm.employee_code
       FROM school_members sm
@@ -216,9 +232,10 @@ exports.getLookups = async (req, res, next) => {
     `;
 
     const params = { sid: { type: sql.UniqueIdentifier, value: schoolId } };
-    const list = await query(sqlQuery, params);
-    
-    return success(res, list || []);
+    const result = await query(sqlQuery, params);
+    const list = result?.recordset || result || [];
+
+    return success(res, list, 'Lookups fetched successfully');
   } catch (err) { next(err); }
 };
 
