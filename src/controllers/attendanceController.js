@@ -1,263 +1,428 @@
+
 // src/controllers/attendanceController.js
 const { query, queryOne, withTransaction, sql } = require('../config/db');
-const { success, created, notFound, badRequest, paginated } = require('../utils/response');
+const { success, badRequest, notFound } = require('../utils/response');
 const { audit } = require('../utils/audit');
 const { v4: uuidv4 } = require('uuid');
 
-// ── GET /api/attendance?section_id=&date= ─────────────────────────────────
-// Returns attendance for a section on a date (for marking page)
-exports.getBySection = async (req, res, next) => {
+const VALID_STATUSES = ['P', 'A', 'L', 'OD'];
+const todayStr = () => new Date().toISOString().split('T')[0];
+const daysAgoStr = (n) => new Date(Date.now() - n * 86400000).toISOString().split('T')[0];
+
+// ═══════════════════════════════════════════════════════════════
+// STUDENT ATTENDANCE
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/attendance/students/roster?section_id=&date=
+// Returns every actively-enrolled student in a section with today's
+// (or given date's) status. Not-yet-marked students default to 'P'
+// (virtual default — nothing is written to DB until you hit Save).
+exports.getSectionRoster = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const { section_id, date } = req.query;
-    if (!section_id || !date) return badRequest(res, 'section_id and date required');
+    if (!section_id || !date) return badRequest(res, 'section_id and date are required');
 
-    const records = await query(
-      `SELECT s.id AS student_id,
-              s.first_name + ' ' + s.last_name AS full_name,
-              s.photo_url, e.roll_no,
-              sa.id AS attendance_id, sa.status, sa.note, sa.period_no,
-              sa.marked_by, sa.marked_at, sa.is_edited
+    const result = await query(
+      `SELECT 
+          st.id AS student_id, st.first_name, st.middle_name, st.last_name, st.photo_url, st.gender,
+          e.roll_no,
+          ISNULL(sa.status, 'P') AS status,
+          sa.remarks
        FROM enrolments e
-       JOIN students s ON s.id = e.student_id
-       LEFT JOIN student_attendance sa
-             ON sa.student_id = s.id
-            AND sa.section_id = @sectionId
-            AND CONVERT(DATE, sa.date) = @date
-            AND sa.school_id = @sid
-            AND sa.deleted_at IS NULL
-       WHERE e.section_id = @sectionId
-         AND e.school_id = @sid
-         AND e.is_active = 1
-         AND e.deleted_at IS NULL
-       ORDER BY e.roll_no, s.first_name`,
+       JOIN students st ON st.id = e.student_id AND st.school_id = @sid AND st.deleted_at IS NULL AND st.is_active = 1
+       LEFT JOIN student_attendance sa 
+              ON sa.student_id = st.id AND sa.school_id = @sid 
+             AND sa.attendance_date = @date AND sa.deleted_at IS NULL
+       WHERE e.school_id = @sid AND e.section_id = @secId AND e.is_active = 1 AND e.deleted_at IS NULL
+       ORDER BY ISNULL(TRY_CAST(e.roll_no AS INT), 999999), st.first_name`,
       {
-        sectionId: { type: sql.UniqueIdentifier, value: section_id },
-        date:      { type: sql.Date, value: date },
-        sid:       { type: sql.UniqueIdentifier, value: schoolId },
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        secId: { type: sql.UniqueIdentifier, value: section_id },
+        date: { type: sql.Date, value: date },
       }
     );
 
-    return success(res, records.recordset);
+    const rows = result.recordset;
+    const counts = { P: 0, A: 0, L: 0, OD: 0 };
+    rows.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
+
+    return success(res, { students: rows, counts, total: rows.length }, 'Roster fetched');
   } catch (err) { next(err); }
 };
 
-// ── POST /api/attendance/bulk ──────────────────────────────────────────────
-// Bulk upsert attendance for a full section day
-// Body: { section_id, date, period_no?, records: [{student_id, enrolment_id, status, note}] }
-exports.markBulk = async (req, res, next) => {
+// POST /api/attendance/students/mark
+// Body: { section_id, date, entries: [{ student_id, status, remarks }] }
+exports.markStudentAttendance = async (req, res, next) => {
   try {
-    const { schoolId, userId } = req.user;
-    const { section_id, date, period_no = null, records } = req.body;
-    if (!section_id || !date || !Array.isArray(records) || records.length === 0)
-      return badRequest(res, 'section_id, date, and records[] required');
+    const { schoolId } = req.user;
+    const markedBy = req.user.userId || req.user.id || null;
+    const { section_id, date, entries } = req.body;
+
+    if (!section_id || !date || !Array.isArray(entries) || entries.length === 0) {
+      return badRequest(res, 'section_id, date and a non-empty entries[] are required');
+    }
 
     await withTransaction(async (tx) => {
-      for (const r of records) {
-        // Check if record exists
-        const req0 = tx.request();
-        req0.input('sid', sql.UniqueIdentifier, schoolId);
-        req0.input('studentId', sql.UniqueIdentifier, r.student_id);
-        req0.input('sectionId', sql.UniqueIdentifier, section_id);
-        req0.input('date', sql.Date, date);
-        req0.input('periodNo', sql.SmallInt, period_no);
-        const existing = await req0.query(
-          `SELECT id FROM student_attendance
-           WHERE school_id=@sid AND student_id=@studentId AND section_id=@sectionId
-             AND CONVERT(DATE,date)=@date
-             AND (period_no = @periodNo OR (@periodNo IS NULL AND period_no IS NULL))
-             AND deleted_at IS NULL`
+      for (const e of entries) {
+        if (!e.student_id) continue;
+        const status = VALID_STATUSES.includes(e.status) ? e.status : 'P';
+
+        const rCheck = tx.request();
+        rCheck.input('sid', sql.UniqueIdentifier, schoolId);
+        rCheck.input('stid', sql.UniqueIdentifier, e.student_id);
+        rCheck.input('date', sql.Date, date);
+        const existing = await rCheck.query(
+          `SELECT id FROM student_attendance WHERE school_id=@sid AND student_id=@stid AND attendance_date=@date AND deleted_at IS NULL`
         );
 
         if (existing.recordset.length > 0) {
-          // Update existing
-          const req2 = tx.request();
-          req2.input('status', sql.VarChar(50), r.status);
-          req2.input('note', sql.NVarChar(sql.MAX), r.note || null);
-          req2.input('editedBy', sql.UniqueIdentifier, userId);
-          req2.input('id', sql.UniqueIdentifier, existing.recordset[0].id);
-          await req2.query(
-            `UPDATE student_attendance SET status=@status, note=@note,
-               is_edited=1, edited_by=@editedBy, edited_at=GETUTCDATE()
-             WHERE id=@id`
+          const rUpd = tx.request();
+          rUpd.input('id', sql.UniqueIdentifier, existing.recordset[0].id);
+          rUpd.input('status', sql.VarChar(2), status);
+          rUpd.input('remarks', sql.NVarChar(255), e.remarks || null);
+          rUpd.input('mb', sql.UniqueIdentifier, markedBy);
+          await rUpd.query(
+            `UPDATE student_attendance SET status=@status, remarks=@remarks, marked_by=@mb, updated_at=GETUTCDATE() WHERE id=@id`
           );
         } else {
-          // Insert new
-          const req3 = tx.request();
-          req3.input('id', sql.UniqueIdentifier, uuidv4());
-          req3.input('sid', sql.UniqueIdentifier, schoolId);
-          req3.input('enrolId', sql.UniqueIdentifier, r.enrolment_id);
-          req3.input('studentId', sql.UniqueIdentifier, r.student_id);
-          req3.input('sectionId', sql.UniqueIdentifier, section_id);
-          req3.input('date', sql.Date, date);
-          req3.input('periodNo', sql.SmallInt, period_no);
-          req3.input('status', sql.VarChar(50), r.status || 'present');
-          req3.input('note', sql.NVarChar(sql.MAX), r.note || null);
-          req3.input('markedBy', sql.UniqueIdentifier, userId);
-          await req3.query(
-            `INSERT INTO student_attendance
-               (id,school_id,enrolment_id,student_id,section_id,date,period_no,status,note,marked_by)
-             VALUES(@id,@sid,@enrolId,@studentId,@sectionId,@date,@periodNo,@status,@note,@markedBy)`
+          const rIns = tx.request();
+          rIns.input('sid', sql.UniqueIdentifier, schoolId);
+          rIns.input('stid', sql.UniqueIdentifier, e.student_id);
+          rIns.input('secid', sql.UniqueIdentifier, section_id);
+          rIns.input('date', sql.Date, date);
+          rIns.input('status', sql.VarChar(2), status);
+          rIns.input('remarks', sql.NVarChar(255), e.remarks || null);
+          rIns.input('mb', sql.UniqueIdentifier, markedBy);
+          await rIns.query(
+            `INSERT INTO student_attendance (id, school_id, student_id, section_id, attendance_date, status, remarks, marked_by)
+             VALUES (NEWID(), @sid, @stid, @secid, @date, @status, @remarks, @mb)`
           );
         }
       }
     });
 
-    await audit({ req, action: 'BULK_MARK_ATTENDANCE', tableName: 'student_attendance',
-      newValues: { section_id, date, count: records.length } });
-    return success(res, null, `Attendance saved for ${records.length} students`);
+    return success(res, null, 'Attendance saved successfully');
   } catch (err) { next(err); }
 };
 
-// ── GET /api/attendance/student/:studentId ────────────────────────────────
-// Individual student attendance — monthly summary
-exports.getStudentAttendance = async (req, res, next) => {
+// GET /api/attendance/students/analysis?section_id=&from=&to=
+// Per-student stats + daily % trend for one section (Class Analysis tab)
+exports.getClassAnalysis = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { section_id, from, to } = req.query;
+    if (!section_id) return badRequest(res, 'section_id is required');
+
+    const rangeFrom = from || daysAgoStr(29);
+    const rangeTo = to || todayStr();
+    const p = {
+      sid: { type: sql.UniqueIdentifier, value: schoolId },
+      secId: { type: sql.UniqueIdentifier, value: section_id },
+      from: { type: sql.Date, value: rangeFrom },
+      to: { type: sql.Date, value: rangeTo },
+    };
+
+    const perStudent = await query(
+      `SELECT st.id AS student_id, st.first_name, st.middle_name, st.last_name, e.roll_no,
+              COUNT(sa.id) AS marked_days,
+              SUM(CASE WHEN sa.status='P' THEN 1 ELSE 0 END) AS present_days,
+              SUM(CASE WHEN sa.status='A' THEN 1 ELSE 0 END) AS absent_days,
+              SUM(CASE WHEN sa.status='L' THEN 1 ELSE 0 END) AS leave_days,
+              SUM(CASE WHEN sa.status='OD' THEN 1 ELSE 0 END) AS od_days
+       FROM enrolments e
+       JOIN students st ON st.id = e.student_id AND st.deleted_at IS NULL
+       LEFT JOIN student_attendance sa 
+              ON sa.student_id = st.id AND sa.school_id=@sid 
+             AND sa.attendance_date BETWEEN @from AND @to AND sa.deleted_at IS NULL
+       WHERE e.school_id=@sid AND e.section_id=@secId AND e.is_active=1 AND e.deleted_at IS NULL
+       GROUP BY st.id, st.first_name, st.middle_name, st.last_name, e.roll_no
+       ORDER BY ISNULL(TRY_CAST(e.roll_no AS INT), 999999)`,
+      p
+    );
+
+    const trend = await query(
+      `SELECT attendance_date,
+              SUM(CASE WHEN status='P' THEN 1 ELSE 0 END) AS present,
+              COUNT(*) AS total
+       FROM student_attendance
+       WHERE school_id=@sid AND section_id=@secId AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
+       GROUP BY attendance_date ORDER BY attendance_date`,
+      p
+    );
+
+    return success(res, {
+      students: perStudent.recordset.map((r) => ({
+        ...r,
+        percentage: r.marked_days > 0 ? Math.round((r.present_days / r.marked_days) * 100) : 0,
+      })),
+      trend: trend.recordset.map((r) => ({
+        date: r.attendance_date,
+        percentage: r.total > 0 ? Math.round((r.present / r.total) * 100) : 0,
+      })),
+    }, 'Class analysis fetched');
+  } catch (err) { next(err); }
+};
+
+// GET /api/attendance/students/school-overview?date=&from=&to=
+// School-wide KPI (today) + grade-wise average + overall trend (School Overview tab)
+exports.getSchoolOverview = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { date, from, to } = req.query;
+    const day = date || todayStr();
+    const rangeFrom = from || daysAgoStr(6);
+    const rangeTo = to || day;
+
+    const sidParam = { type: sql.UniqueIdentifier, value: schoolId };
+
+    const todayCounts = await queryOne(
+      `SELECT 
+          SUM(CASE WHEN status='P' THEN 1 ELSE 0 END) AS present,
+          SUM(CASE WHEN status='A' THEN 1 ELSE 0 END) AS absent,
+          SUM(CASE WHEN status='L' THEN 1 ELSE 0 END) AS leave,
+          SUM(CASE WHEN status='OD' THEN 1 ELSE 0 END) AS od,
+          COUNT(*) AS total
+       FROM student_attendance
+       WHERE school_id=@sid AND attendance_date=@date AND deleted_at IS NULL`,
+      { sid: sidParam, date: { type: sql.Date, value: day } }
+    );
+
+    const gradeWise = await query(
+      `SELECT g.name AS grade_name, g.numeric_order,
+              SUM(CASE WHEN sa.status='P' THEN 1 ELSE 0 END) AS present,
+              COUNT(sa.id) AS total
+       FROM student_attendance sa
+       JOIN sections s ON s.id = sa.section_id
+       JOIN grades g ON g.id = s.grade_id
+       WHERE sa.school_id=@sid AND sa.attendance_date BETWEEN @from AND @to AND sa.deleted_at IS NULL
+       GROUP BY g.name, g.numeric_order
+       ORDER BY g.numeric_order`,
+      { sid: sidParam, from: { type: sql.Date, value: rangeFrom }, to: { type: sql.Date, value: rangeTo } }
+    );
+
+    const trend = await query(
+      `SELECT attendance_date,
+              SUM(CASE WHEN status='P' THEN 1 ELSE 0 END) AS present,
+              COUNT(*) AS total
+       FROM student_attendance
+       WHERE school_id=@sid AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
+       GROUP BY attendance_date ORDER BY attendance_date`,
+      { sid: sidParam, from: { type: sql.Date, value: rangeFrom }, to: { type: sql.Date, value: rangeTo } }
+    );
+
+    return success(res, {
+      today: todayCounts || { present: 0, absent: 0, leave: 0, od: 0, total: 0 },
+      gradeWise: gradeWise.recordset.map((r) => ({
+        ...r, percentage: r.total > 0 ? Math.round((r.present / r.total) * 100) : 0,
+      })),
+      trend: trend.recordset.map((r) => ({
+        date: r.attendance_date, percentage: r.total > 0 ? Math.round((r.present / r.total) * 100) : 0,
+      })),
+    }, 'School overview fetched');
+  } catch (err) { next(err); }
+};
+
+// GET /api/attendance/students/:studentId/history?from=&to=
+exports.getStudentHistory = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const { studentId } = req.params;
-    const { from, to } = req.query; // YYYY-MM-DD
+    const { from, to } = req.query;
+    const rangeFrom = from || daysAgoStr(29);
+    const rangeTo = to || todayStr();
 
-    const records = await query(
-      `SELECT CONVERT(DATE, date) AS att_date, status, note, period_no
+    const rows = await query(
+      `SELECT attendance_date, status, remarks
        FROM student_attendance
-       WHERE school_id = @sid AND student_id = @studentId
-         AND deleted_at IS NULL
-         ${from ? 'AND CONVERT(DATE,date) >= @from' : ''}
-         ${to   ? 'AND CONVERT(DATE,date) <= @to'   : ''}
-       ORDER BY att_date`,
+       WHERE school_id=@sid AND student_id=@stid AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
+       ORDER BY attendance_date`,
       {
-        sid:       { type: sql.UniqueIdentifier, value: schoolId },
-        studentId: { type: sql.UniqueIdentifier, value: studentId },
-        ...(from ? { from: { type: sql.Date, value: from } } : {}),
-        ...(to   ? { to:   { type: sql.Date, value: to   } } : {}),
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        stid: { type: sql.UniqueIdentifier, value: studentId },
+        from: { type: sql.Date, value: rangeFrom },
+        to: { type: sql.Date, value: rangeTo },
       }
     );
 
-    const all = records.recordset;
-    const present = all.filter(r => r.status === 'present').length;
-    const absent  = all.filter(r => r.status === 'absent').length;
-    const total   = all.length;
-    const pct     = total > 0 ? Math.round((present / total) * 100) : 0;
+    const counts = { P: 0, A: 0, L: 0, OD: 0 };
+    rows.recordset.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
+    const totalMarked = rows.recordset.length;
+    const percentage = totalMarked > 0 ? Math.round((counts.P / totalMarked) * 100) : 0;
 
-    return success(res, {
-      summary: { total, present, absent, percentage: pct },
-      records: all,
-    });
+    return success(res, { records: rows.recordset, counts, totalMarked, percentage }, 'Student attendance history fetched');
   } catch (err) { next(err); }
 };
 
-// ── GET /api/attendance/analysis?section_id= ─────────────────────────────
-// Section-level analysis (all students, monthly stats)
-exports.getSectionAnalysis = async (req, res, next) => {
+// ═══════════════════════════════════════════════════════════════
+// STAFF / TEACHER ATTENDANCE
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/attendance/staff/roster?date=
+exports.getStaffRoster = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
-    const { section_id, month, year } = req.query;
-    if (!section_id) return badRequest(res, 'section_id required');
+    const { date } = req.query;
+    if (!date) return badRequest(res, 'date is required');
 
-    const analysis = await query(
-      `SELECT s.id AS student_id,
-              s.first_name + ' ' + s.last_name AS full_name,
-              s.photo_url, e.roll_no,
-              COUNT(sa.id) AS total_days,
-              SUM(CASE WHEN sa.status = 'present' THEN 1 ELSE 0 END) AS present_days,
-              SUM(CASE WHEN sa.status = 'absent'  THEN 1 ELSE 0 END) AS absent_days,
-              CAST(
-                CAST(SUM(CASE WHEN sa.status='present' THEN 1.0 ELSE 0 END) AS FLOAT)
-                / NULLIF(COUNT(sa.id), 0) * 100
-              AS DECIMAL(5,1)) AS attendance_pct
-       FROM enrolments e
-       JOIN students s ON s.id = e.student_id
-       LEFT JOIN student_attendance sa
-             ON sa.student_id = s.id
-            AND sa.section_id = @sectionId
-            AND sa.school_id  = @sid
-            AND sa.deleted_at IS NULL
-            ${month && year ? 'AND MONTH(sa.date)=@month AND YEAR(sa.date)=@year' : ''}
-       WHERE e.section_id = @sectionId AND e.school_id = @sid AND e.is_active = 1
-       GROUP BY s.id, s.first_name, s.last_name, s.photo_url, e.roll_no
-       ORDER BY attendance_pct ASC`,
-      {
-        sectionId: { type: sql.UniqueIdentifier, value: section_id },
-        sid:       { type: sql.UniqueIdentifier, value: schoolId },
-        ...(month ? { month: { type: sql.Int, value: +month } } : {}),
-        ...(year  ? { year:  { type: sql.Int, value: +year  } } : {}),
-      }
+    const result = await query(
+      `SELECT u.id AS user_id, u.full_name, u.avatar_url, u.gender,
+              sp.department, sp.designation,
+              ISNULL(sf.status, 'P') AS status,
+              sf.remarks
+       FROM school_members sm
+       JOIN users u ON u.id = sm.user_id
+       LEFT JOIN staff_profiles sp ON sp.user_id = sm.user_id AND sp.school_id = sm.school_id
+       LEFT JOIN staff_attendance sf 
+              ON sf.user_id = u.id AND sf.school_id = @sid 
+             AND sf.attendance_date = @date AND sf.deleted_at IS NULL
+       WHERE sm.school_id = @sid AND sm.role = 'teacher' AND sm.is_active = 1 AND sm.deleted_at IS NULL
+       ORDER BY u.full_name`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId }, date: { type: sql.Date, value: date } }
     );
 
-    return success(res, analysis.recordset);
+    const rows = result.recordset;
+    const counts = { P: 0, A: 0, L: 0, OD: 0 };
+    rows.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
+
+    return success(res, { teachers: rows, counts, total: rows.length }, 'Staff roster fetched');
   } catch (err) { next(err); }
 };
-
-// ── GET /api/attendance/class-summary ─────────────────────────────────────
-// Per-class average attendance — for dashboard chart
-exports.getClassSummary = async (req, res, next) => {
-  try {
-    const { schoolId } = req.user;
-    const summary = await query(
-      `SELECT g.name AS class_name, g.numeric_order,
-              CAST(
-                CAST(SUM(CASE WHEN sa.status='present' THEN 1.0 ELSE 0 END) AS FLOAT)
-                / NULLIF(COUNT(sa.id), 0) * 100
-              AS DECIMAL(5,1)) AS avg_pct
-       FROM grades g
-       JOIN sections sc ON sc.grade_id = g.id AND sc.school_id = @sid
-       JOIN student_attendance sa ON sa.section_id = sc.id AND sa.school_id = @sid
-       WHERE g.school_id = @sid AND sa.deleted_at IS NULL
-       GROUP BY g.name, g.numeric_order
-       ORDER BY g.numeric_order`,
-      { sid: { type: sql.UniqueIdentifier, value: schoolId } }
-    );
-    return success(res, summary.recordset);
-  } catch (err) { next(err); }
-};
-
-// ── Staff Attendance ──────────────────────────────────────────────────────
 
 // POST /api/attendance/staff/mark
-exports.markStaff = async (req, res, next) => {
+// Body: { date, entries: [{ user_id, status, remarks }] }
+exports.markStaffAttendance = async (req, res, next) => {
   try {
-    const { schoolId, userId } = req.user;
-    const { staff_id, date, status, check_in_time, check_out_time, note } = req.body;
+    const { schoolId } = req.user;
+    const markedBy = req.user.userId || req.user.id || null;
+    const { date, entries } = req.body;
 
-    const existing = await queryOne(
-      `SELECT id FROM staff_attendance WHERE school_id=@sid AND staff_id=@staffId AND CONVERT(DATE,date)=@date`,
+    if (!date || !Array.isArray(entries) || entries.length === 0) {
+      return badRequest(res, 'date and a non-empty entries[] are required');
+    }
+
+    await withTransaction(async (tx) => {
+      for (const e of entries) {
+        if (!e.user_id) continue;
+        const status = VALID_STATUSES.includes(e.status) ? e.status : 'P';
+
+        const rCheck = tx.request();
+        rCheck.input('sid', sql.UniqueIdentifier, schoolId);
+        rCheck.input('uid', sql.UniqueIdentifier, e.user_id);
+        rCheck.input('date', sql.Date, date);
+        const existing = await rCheck.query(
+          `SELECT id FROM staff_attendance WHERE school_id=@sid AND user_id=@uid AND attendance_date=@date AND deleted_at IS NULL`
+        );
+
+        if (existing.recordset.length > 0) {
+          const rUpd = tx.request();
+          rUpd.input('id', sql.UniqueIdentifier, existing.recordset[0].id);
+          rUpd.input('status', sql.VarChar(2), status);
+          rUpd.input('remarks', sql.NVarChar(255), e.remarks || null);
+          rUpd.input('mb', sql.UniqueIdentifier, markedBy);
+          await rUpd.query(
+            `UPDATE staff_attendance SET status=@status, remarks=@remarks, marked_by=@mb, updated_at=GETUTCDATE() WHERE id=@id`
+          );
+        } else {
+          const rIns = tx.request();
+          rIns.input('sid', sql.UniqueIdentifier, schoolId);
+          rIns.input('uid', sql.UniqueIdentifier, e.user_id);
+          rIns.input('date', sql.Date, date);
+          rIns.input('status', sql.VarChar(2), status);
+          rIns.input('remarks', sql.NVarChar(255), e.remarks || null);
+          rIns.input('mb', sql.UniqueIdentifier, markedBy);
+          await rIns.query(
+            `INSERT INTO staff_attendance (id, school_id, user_id, attendance_date, status, remarks, marked_by)
+             VALUES (NEWID(), @sid, @uid, @date, @status, @remarks, @mb)`
+          );
+        }
+      }
+    });
+
+    return success(res, null, 'Staff attendance saved successfully');
+  } catch (err) { next(err); }
+};
+
+// GET /api/attendance/staff/analysis?from=&to=
+exports.getStaffAnalysis = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { from, to } = req.query;
+    const rangeFrom = from || daysAgoStr(29);
+    const rangeTo = to || todayStr();
+    const p = {
+      sid: { type: sql.UniqueIdentifier, value: schoolId },
+      from: { type: sql.Date, value: rangeFrom },
+      to: { type: sql.Date, value: rangeTo },
+    };
+
+    const perTeacher = await query(
+      `SELECT u.id AS user_id, u.full_name, sp.department,
+              COUNT(sf.id) AS marked_days,
+              SUM(CASE WHEN sf.status='P' THEN 1 ELSE 0 END) AS present_days,
+              SUM(CASE WHEN sf.status='A' THEN 1 ELSE 0 END) AS absent_days,
+              SUM(CASE WHEN sf.status='L' THEN 1 ELSE 0 END) AS leave_days,
+              SUM(CASE WHEN sf.status='OD' THEN 1 ELSE 0 END) AS od_days
+       FROM school_members sm
+       JOIN users u ON u.id = sm.user_id
+       LEFT JOIN staff_profiles sp ON sp.user_id = sm.user_id AND sp.school_id = sm.school_id
+       LEFT JOIN staff_attendance sf 
+              ON sf.user_id = u.id AND sf.school_id = @sid 
+             AND sf.attendance_date BETWEEN @from AND @to AND sf.deleted_at IS NULL
+       WHERE sm.school_id = @sid AND sm.role = 'teacher' AND sm.is_active = 1 AND sm.deleted_at IS NULL
+       GROUP BY u.id, u.full_name, sp.department
+       ORDER BY u.full_name`,
+      p
+    );
+
+    const trend = await query(
+      `SELECT attendance_date,
+              SUM(CASE WHEN status='P' THEN 1 ELSE 0 END) AS present,
+              COUNT(*) AS total
+       FROM staff_attendance
+       WHERE school_id=@sid AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
+       GROUP BY attendance_date ORDER BY attendance_date`,
+      p
+    );
+
+    return success(res, {
+      teachers: perTeacher.recordset.map((r) => ({
+        ...r, percentage: r.marked_days > 0 ? Math.round((r.present_days / r.marked_days) * 100) : 0,
+      })),
+      trend: trend.recordset.map((r) => ({
+        date: r.attendance_date, percentage: r.total > 0 ? Math.round((r.present / r.total) * 100) : 0,
+      })),
+    }, 'Staff analysis fetched');
+  } catch (err) { next(err); }
+};
+
+// GET /api/attendance/staff/:userId/history?from=&to=
+exports.getStaffHistory = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { userId } = req.params;
+    const { from, to } = req.query;
+    const rangeFrom = from || daysAgoStr(29);
+    const rangeTo = to || todayStr();
+
+    const rows = await query(
+      `SELECT attendance_date, status, remarks
+       FROM staff_attendance
+       WHERE school_id=@sid AND user_id=@uid AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
+       ORDER BY attendance_date`,
       {
-        sid:     { type: sql.UniqueIdentifier, value: schoolId },
-        staffId: { type: sql.UniqueIdentifier, value: staff_id },
-        date:    { type: sql.Date, value: date },
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        uid: { type: sql.UniqueIdentifier, value: userId },
+        from: { type: sql.Date, value: rangeFrom },
+        to: { type: sql.Date, value: rangeTo },
       }
     );
 
-    if (existing) {
-      await query(
-        `UPDATE staff_attendance SET status=@status, check_in_time=@cin, check_out_time=@cout,
-           note=@note, marked_by=@markedBy, updated_at=GETUTCDATE()
-         WHERE id=@id`,
-        {
-          id:       { type: sql.UniqueIdentifier, value: existing.id },
-          status:   { type: sql.VarChar(50), value: status },
-          cin:      { type: sql.Time, value: check_in_time || null },
-          cout:     { type: sql.Time, value: check_out_time || null },
-          note:     { type: sql.NVarChar(sql.MAX), value: note || null },
-          markedBy: { type: sql.UniqueIdentifier, value: userId },
-        }
-      );
-    } else {
-      await query(
-        `INSERT INTO staff_attendance (id,school_id,staff_id,date,status,check_in_time,check_out_time,marked_by,note)
-         VALUES(NEWID(),@sid,@staffId,@date,@status,@cin,@cout,@markedBy,@note)`,
-        {
-          sid:     { type: sql.UniqueIdentifier, value: schoolId },
-          staffId: { type: sql.UniqueIdentifier, value: staff_id },
-          date:    { type: sql.Date, value: date },
-          status:  { type: sql.VarChar(50), value: status },
-          cin:     { type: sql.Time, value: check_in_time || null },
-          cout:    { type: sql.Time, value: check_out_time || null },
-          markedBy:{ type: sql.UniqueIdentifier, value: userId },
-          note:    { type: sql.NVarChar(sql.MAX), value: note || null },
-        }
-      );
-    }
-    return success(res, null, 'Staff attendance saved');
+    const counts = { P: 0, A: 0, L: 0, OD: 0 };
+    rows.recordset.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
+    const totalMarked = rows.recordset.length;
+    const percentage = totalMarked > 0 ? Math.round((counts.P / totalMarked) * 100) : 0;
+
+    return success(res, { records: rows.recordset, counts, totalMarked, percentage }, 'Staff attendance history fetched');
   } catch (err) { next(err); }
 };
