@@ -81,7 +81,7 @@ app.use(`${API}/students`,      require('./routes/students'));
 app.use(`${API}/teachers`,      require('./routes/teachers'));
 app.use(`${API}/fees`,          require('./routes/fees'));
 app.use(`${API}/results`,       require('./routes/results'));
-app.use(`${API}/timetables`,    require('./routes/timetables'));
+app.use(`${API}/timetable`,    require('./routes/timetables'));
 app.use(`${API}/quick-tests`,   require('./routes/quickTests'));
 app.use(`${API}/exams`,         require('./routes/exams'));
 app.use(`${API}/notices`,       require('./routes/notices'));
