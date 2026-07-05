@@ -9,6 +9,11 @@ router.get('/',               ctrl.list);
 router.get('/lookups',        ctrl.getLookups); // ✅ Naya: Dynamic Dropdowns
 router.get('/:userId',        ctrl.getOne);
 
+router.get('/:userId/subjects', teachersController.getTeacherSubjects);
+router.get('/section-assignments', teachersController.getSectionAssignments);
+router.post('/assignments', teachersController.assignSubject);
+router.delete('/assignments/:assignmentId', teachersController.removeAssignment);
+
 // ── Admin Only (Write Operations) ───────────────────────────────────────
 router.post('/',              authorize('admin', 'principal'), ctrl.create);
 router.put('/:userId',        authorize('admin', 'principal'), ctrl.update);
