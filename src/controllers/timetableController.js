@@ -1,217 +1,253 @@
 // src/controllers/timetableController.js
 const { query, queryOne, withTransaction, sql } = require('../config/db');
-const { success, created, notFound, badRequest } = require('../utils/response');
-const { audit } = require('../utils/audit');
-const { v4: uuidv4 } = require('uuid');
+const { success, created, badRequest, notFound } = require('../utils/response');
 
-// ── GET /api/timetables?section_id=&academic_year_id= ─────────────────────
-exports.getBySection = async (req, res, next) => {
+const DAY_NAMES = { 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat', 7: 'Sun' };
+
+// ═══════════════════════════════════════════════════════════════
+// PERIOD SLOTS
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/timetable/periods
+exports.listPeriods = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
-    const { section_id, academic_year_id } = req.query;
-    if (!section_id) return badRequest(res, 'section_id required');
-
-    // Get active timetable for this section
-    const timetable = await queryOne(
-      `SELECT t.*, u.full_name AS created_by_name
-       FROM timetables t
-       LEFT JOIN users u ON u.id = t.created_by
-       WHERE t.school_id = @sid AND t.section_id = @secId AND t.is_active = 1 AND t.deleted_at IS NULL
-         ${academic_year_id ? 'AND t.academic_year_id = @ayId' : ''}
-       ORDER BY t.effective_from DESC
-       OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY`,
-      {
-        sid:   { type: sql.UniqueIdentifier, value: schoolId },
-        secId: { type: sql.UniqueIdentifier, value: section_id },
-        ...(academic_year_id ? { ayId: { type: sql.UniqueIdentifier, value: academic_year_id } } : {}),
-      }
+    const result = await query(
+      `SELECT id, period_number, label, start_time, end_time, is_break, is_active
+       FROM period_slots WHERE school_id=@sid AND is_active=1 ORDER BY period_number`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
-
-    if (!timetable) return success(res, null, 'No active timetable found');
-
-    // Get all slots for this timetable with subject + teacher info
-    const slots = await query(
-      `SELECT ts.*,
-              sub.name         AS subject_name,
-              sub.code         AS subject_code,
-              u.full_name      AS teacher_name,
-              r.name           AS room_name,
-              -- Check if teacher is absent today
-              CASE WHEN sa.status = 'absent' THEN 1 ELSE 0 END AS teacher_absent,
-              -- Substitute if any
-              sub2.full_name   AS substitute_name
-       FROM timetable_slots ts
-       LEFT JOIN subjects sub  ON sub.id  = ts.subject_id
-       LEFT JOIN users u       ON u.id    = ts.teacher_id
-       LEFT JOIN rooms r       ON r.id    = ts.room_id
-       LEFT JOIN staff_attendance sa ON sa.staff_id = ts.teacher_id
-                 AND sa.school_id = @sid
-                 AND CONVERT(DATE, sa.date) = CONVERT(DATE, GETUTCDATE())
-       LEFT JOIN substitutions sub_rec ON sub_rec.slot_id = ts.id
-                 AND sub_rec.school_id = @sid
-                 AND CONVERT(DATE, sub_rec.date) = CONVERT(DATE, GETUTCDATE())
-                 AND sub_rec.deleted_at IS NULL
-       LEFT JOIN users sub2    ON sub2.id = sub_rec.substitute_teacher_id
-       WHERE ts.timetable_id = @ttId AND ts.deleted_at IS NULL
-       ORDER BY
-         CASE ts.day_of_week
-           WHEN 'monday' THEN 1 WHEN 'tuesday' THEN 2 WHEN 'wednesday' THEN 3
-           WHEN 'thursday' THEN 4 WHEN 'friday' THEN 5 WHEN 'saturday' THEN 6
-           ELSE 7 END,
-         ts.period_no`,
-      {
-        sid:  { type: sql.UniqueIdentifier, value: schoolId },
-        ttId: { type: sql.UniqueIdentifier, value: timetable.id },
-      }
-    );
-
-    // Group by day
-    const grouped = {};
-    for (const slot of slots.recordset) {
-      if (!grouped[slot.day_of_week]) grouped[slot.day_of_week] = [];
-      grouped[slot.day_of_week].push(slot);
-    }
-
-    return success(res, { timetable, slots: grouped });
+    return success(res, result.recordset, 'Periods fetched');
   } catch (err) { next(err); }
 };
 
-// ── POST /api/timetables ──────────────────────────────────────────────────
-exports.create = async (req, res, next) => {
+// POST /api/timetable/periods/generate-defaults
+// Uses schools.periods_per_day / period_duration_min / school_start_time to
+// auto-generate a starting structure — minimal manual entry.
+exports.generateDefaultPeriods = async (req, res, next) => {
   try {
-    const { schoolId, userId } = req.user;
-    const { section_id, academic_year_id, effective_from, effective_till } = req.body;
-
-    // Deactivate previous timetables for same section
-    await query(
-      `UPDATE timetables SET is_active = 0, effective_till = DATEADD(DAY,-1,@from), updated_at = GETUTCDATE()
-       WHERE school_id = @sid AND section_id = @secId AND is_active = 1 AND deleted_at IS NULL`,
-      {
-        sid:   { type: sql.UniqueIdentifier, value: schoolId },
-        secId: { type: sql.UniqueIdentifier, value: section_id },
-        from:  { type: sql.Date, value: effective_from },
-      }
-    );
-
-    const r = await query(
-      `INSERT INTO timetables (id,school_id,section_id,academic_year_id,effective_from,effective_till,created_by)
-       OUTPUT INSERTED.id
-       VALUES(NEWID(),@sid,@secId,@ayId,@from,@till,@createdBy)`,
-      {
-        sid:       { type: sql.UniqueIdentifier, value: schoolId },
-        secId:     { type: sql.UniqueIdentifier, value: section_id },
-        ayId:      { type: sql.UniqueIdentifier, value: academic_year_id },
-        from:      { type: sql.Date, value: effective_from },
-        till:      { type: sql.Date, value: effective_till || null },
-        createdBy: { type: sql.UniqueIdentifier, value: userId },
-      }
-    );
-
-    const ttId = r.recordset[0].id;
-    await audit({ req, action: 'CREATE', tableName: 'timetables', recordId: ttId });
-    return created(res, { id: ttId }, 'Timetable created');
-  } catch (err) { next(err); }
-};
-
-// ── POST /api/timetables/:id/slots ────────────────────────────────────────
-// Bulk upsert slots (full week at once)
-exports.saveSlots = async (req, res, next) => {
-  try {
-    const { id: timetableId } = req.params;
     const { schoolId } = req.user;
-    const { slots } = req.body; // [{day_of_week, period_no, start_time, end_time, subject_id, teacher_id, room_id, is_break, break_label}]
 
-    if (!Array.isArray(slots) || slots.length === 0) return badRequest(res, 'slots[] required');
+    const school = await queryOne(
+      `SELECT periods_per_day, period_duration_min, school_start_time FROM schools WHERE id=@sid`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+    if (!school) return notFound(res, 'School not found');
+
+    const periodsPerDay = school.periods_per_day || 8;
+    const duration = school.period_duration_min || 45;
+    let [h, m] = (school.school_start_time || '08:00:00').toString().split(':').map(Number);
 
     await withTransaction(async (tx) => {
-      // Delete existing slots for this timetable
-      const del = tx.request();
-      del.input('ttId', sql.UniqueIdentifier, timetableId);
-      del.input('sid',  sql.UniqueIdentifier, schoolId);
-      await del.query(`UPDATE timetable_slots SET deleted_at = GETUTCDATE() WHERE timetable_id = @ttId AND school_id = @sid AND deleted_at IS NULL`);
+      const rDel = tx.request();
+      rDel.input('sid', sql.UniqueIdentifier, schoolId);
+      await rDel.query(`DELETE FROM period_slots WHERE school_id=@sid`);
 
-      // Insert new slots
-      for (const s of slots) {
+      for (let i = 1; i <= periodsPerDay; i++) {
+        const startH = h, startM = m;
+        m += duration;
+        h += Math.floor(m / 60);
+        m = m % 60;
+        const startStr = `${String(startH).padStart(2, '0')}:${String(startM).padStart(2, '0')}:00`;
+        const endStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
+
         const r = tx.request();
-        r.input('id',          sql.UniqueIdentifier, uuidv4());
-        r.input('sid',         sql.UniqueIdentifier, schoolId);
-        r.input('ttId',        sql.UniqueIdentifier, timetableId);
-        r.input('day',         sql.VarChar(20),       s.day_of_week.toLowerCase());
-        r.input('periodNo',    sql.SmallInt,          s.period_no);
-        r.input('startTime',   sql.Time,              s.start_time);
-        r.input('endTime',     sql.Time,              s.end_time);
-        r.input('subjectId',   sql.UniqueIdentifier,  s.subject_id   || null);
-        r.input('teacherId',   sql.UniqueIdentifier,  s.teacher_id   || null);
-        r.input('roomId',      sql.UniqueIdentifier,  s.room_id      || null);
-        r.input('isBreak',     sql.Bit,               s.is_break  ? 1 : 0);
-        r.input('breakLabel',  sql.NVarChar(100),     s.break_label  || null);
+        r.input('sid', sql.UniqueIdentifier, schoolId);
+        r.input('num', sql.SmallInt, i);
+        r.input('label', sql.NVarChar(50), `Period ${i}`);
+        r.input('st', sql.VarChar(15), startStr);
+        r.input('et', sql.VarChar(15), endStr);
         await r.query(
-          `INSERT INTO timetable_slots (id,school_id,timetable_id,day_of_week,period_no,start_time,end_time,subject_id,teacher_id,room_id,is_break,break_label)
-           VALUES(@id,@sid,@ttId,@day,@periodNo,@startTime,@endTime,@subjectId,@teacherId,@roomId,@isBreak,@breakLabel)`
+          `INSERT INTO period_slots (id, school_id, period_number, label, start_time, end_time)
+           VALUES (NEWID(), @sid, @num, @label, CAST(@st AS TIME), CAST(@et AS TIME))`
         );
       }
     });
 
-    return success(res, null, `${slots.length} slots saved`);
+    return success(res, null, `${periodsPerDay} periods generated successfully`);
   } catch (err) { next(err); }
 };
 
-// ── GET /api/timetables/today-absent ─────────────────────────────────────
-// For dashboard: which slots today have absent teacher + who can substitute
-exports.getTodayAbsent = async (req, res, next) => {
+// POST /api/timetable/periods  { period_number, label, start_time, end_time, is_break }
+exports.createPeriod = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
-    const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
-    const dayName = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'][new Date().getDay()];
-
-    const affected = await query(
-      `SELECT DISTINCT
-              ts.id AS slot_id, ts.period_no, ts.start_time, ts.end_time,
-              sub.name  AS subject_name,
-              u.id      AS absent_teacher_id,
-              u.full_name AS absent_teacher_name,
-              g.name    AS class_name, sc.name AS section_name,
-              sc.id     AS section_id
-       FROM timetable_slots ts
-       JOIN timetables tt      ON tt.id = ts.timetable_id AND tt.is_active = 1 AND tt.school_id = @sid
-       JOIN sections sc        ON sc.id = tt.section_id
-       JOIN grades g           ON g.id  = sc.grade_id
-       JOIN subjects sub       ON sub.id = ts.subject_id
-       JOIN users u            ON u.id  = ts.teacher_id
-       JOIN staff_attendance sa ON sa.staff_id = ts.teacher_id AND sa.school_id = @sid
-                 AND CONVERT(DATE, sa.date) = @today AND sa.status = 'absent'
-       WHERE ts.school_id = @sid AND ts.day_of_week = @day AND ts.is_break = 0 AND ts.deleted_at IS NULL`,
+    const { period_number, label, start_time, end_time, is_break = false } = req.body;
+    if (!period_number || !label || !start_time || !end_time) {
+      return badRequest(res, 'period_number, label, start_time and end_time are required');
+    }
+    const r = await query(
+      `INSERT INTO period_slots (id, school_id, period_number, label, start_time, end_time, is_break)
+       OUTPUT INSERTED.id
+       VALUES (NEWID(), @sid, @num, @label, CAST(@st AS TIME), CAST(@et AS TIME), @brk)`,
       {
-        sid:   { type: sql.UniqueIdentifier, value: schoolId },
-        today: { type: sql.Date,            value: today },
-        day:   { type: sql.VarChar(20),     value: dayName },
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        num: { type: sql.SmallInt, value: period_number },
+        label: { type: sql.NVarChar(50), value: label },
+        st: { type: sql.VarChar(15), value: start_time },
+        et: { type: sql.VarChar(15), value: end_time },
+        brk: { type: sql.Bit, value: is_break ? 1 : 0 },
       }
     );
-
-    return success(res, affected.recordset);
+    return created(res, { id: r.recordset[0].id }, 'Period slot created');
   } catch (err) { next(err); }
 };
 
-// ── POST /api/timetables/substitute ──────────────────────────────────────
-exports.createSubstitution = async (req, res, next) => {
+// DELETE /api/timetable/periods/:id
+exports.deletePeriod = async (req, res, next) => {
   try {
-    const { schoolId, userId } = req.user;
-    const { slot_id, date, absent_teacher_id, substitute_teacher_id, reason } = req.body;
+    const { schoolId } = req.user;
+    const { id } = req.params;
+    await query(`UPDATE period_slots SET is_active=0, updated_at=GETUTCDATE() WHERE id=@id AND school_id=@sid`, {
+      id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId },
+    });
+    return success(res, null, 'Period slot removed');
+  } catch (err) { next(err); }
+};
 
-    await query(
-      `INSERT INTO substitutions (id,school_id,slot_id,date,absent_teacher_id,substitute_teacher_id,reason,approved_by)
-       VALUES(NEWID(),@sid,@slotId,@date,@absentId,@subId,@reason,@approvedBy)`,
+// ═══════════════════════════════════════════════════════════════
+// SECTION TIMETABLE (admin grid)
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/timetable/section/:sectionId?academic_year_id=
+exports.getSectionTimetable = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { sectionId } = req.params;
+    const { academic_year_id } = req.query;
+    if (!academic_year_id) return badRequest(res, 'academic_year_id is required');
+
+    const result = await query(
+      `SELECT te.id, te.day_of_week, te.period_slot_id, te.subject_id, te.teacher_id, te.room_no,
+              s.name AS subject_name, u.full_name AS teacher_name
+       FROM timetable_entries te
+       LEFT JOIN subjects s ON s.id = te.subject_id
+       LEFT JOIN users u ON u.id = te.teacher_id
+       WHERE te.school_id=@sid AND te.academic_year_id=@ayId AND te.section_id=@secId`,
       {
-        sid:       { type: sql.UniqueIdentifier, value: schoolId },
-        slotId:    { type: sql.UniqueIdentifier, value: slot_id },
-        date:      { type: sql.Date,             value: date },
-        absentId:  { type: sql.UniqueIdentifier, value: absent_teacher_id },
-        subId:     { type: sql.UniqueIdentifier, value: substitute_teacher_id },
-        reason:    { type: sql.NVarChar(sql.MAX), value: reason || null },
-        approvedBy:{ type: sql.UniqueIdentifier, value: userId },
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        ayId: { type: sql.UniqueIdentifier, value: academic_year_id },
+        secId: { type: sql.UniqueIdentifier, value: sectionId },
       }
     );
 
-    return created(res, null, 'Substitution arranged');
+    return success(res, result.recordset, 'Section timetable fetched');
+  } catch (err) { next(err); }
+};
+
+// PUT /api/timetable/section
+// Body: { section_id, academic_year_id, entries: [{ day_of_week, period_slot_id, subject_id, teacher_id, room_no }] }
+// Full-replace pattern. Validates teacher double-booking against OTHER
+// sections before saving anything (all-or-nothing).
+exports.saveSectionTimetable = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { section_id, academic_year_id, entries } = req.body;
+
+    if (!section_id || !academic_year_id || !Array.isArray(entries)) {
+      return badRequest(res, 'section_id, academic_year_id and entries[] are required');
+    }
+
+    const activeEntries = entries.filter((e) => e.period_slot_id && e.day_of_week);
+
+    // ── Conflict check: teacher already booked elsewhere at same day+period ──
+    const conflicts = [];
+    for (const e of activeEntries) {
+      if (!e.teacher_id) continue;
+      const existing = await query(
+        `SELECT te.id, sec.name AS section_name, g.name AS grade_name
+         FROM timetable_entries te
+         JOIN sections sec ON sec.id = te.section_id
+         JOIN grades g ON g.id = sec.grade_id
+         WHERE te.school_id=@sid AND te.academic_year_id=@ayId AND te.day_of_week=@day
+           AND te.period_slot_id=@slot AND te.teacher_id=@teacherId AND te.section_id <> @secId`,
+        {
+          sid: { type: sql.UniqueIdentifier, value: schoolId },
+          ayId: { type: sql.UniqueIdentifier, value: academic_year_id },
+          day: { type: sql.TinyInt, value: e.day_of_week },
+          slot: { type: sql.UniqueIdentifier, value: e.period_slot_id },
+          teacherId: { type: sql.UniqueIdentifier, value: e.teacher_id },
+          secId: { type: sql.UniqueIdentifier, value: section_id },
+        }
+      );
+      if (existing.recordset.length > 0) {
+        conflicts.push({
+          day: DAY_NAMES[e.day_of_week] || e.day_of_week,
+          period_slot_id: e.period_slot_id,
+          teacher_id: e.teacher_id,
+          conflicting_with: `${existing.recordset[0].grade_name} - ${existing.recordset[0].section_name}`,
+        });
+      }
+    }
+
+    if (conflicts.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Teacher scheduling conflicts detected. Nothing was saved.',
+        conflicts,
+      });
+    }
+
+    await withTransaction(async (tx) => {
+      const rDel = tx.request();
+      rDel.input('sid', sql.UniqueIdentifier, schoolId);
+      rDel.input('ayId', sql.UniqueIdentifier, academic_year_id);
+      rDel.input('secId', sql.UniqueIdentifier, section_id);
+      await rDel.query(`DELETE FROM timetable_entries WHERE school_id=@sid AND academic_year_id=@ayId AND section_id=@secId`);
+
+      for (const e of activeEntries) {
+        const r = tx.request();
+        r.input('sid', sql.UniqueIdentifier, schoolId);
+        r.input('ayId', sql.UniqueIdentifier, academic_year_id);
+        r.input('secId', sql.UniqueIdentifier, section_id);
+        r.input('day', sql.TinyInt, e.day_of_week);
+        r.input('slot', sql.UniqueIdentifier, e.period_slot_id);
+        r.input('subId', sql.UniqueIdentifier, e.subject_id || null);
+        r.input('teacherId', sql.UniqueIdentifier, e.teacher_id || null);
+        r.input('room', sql.NVarChar(50), e.room_no || null);
+        await r.query(
+          `INSERT INTO timetable_entries (id, school_id, academic_year_id, section_id, day_of_week, period_slot_id, subject_id, teacher_id, room_no)
+           VALUES (NEWID(), @sid, @ayId, @secId, @day, @slot, @subId, @teacherId, @room)`
+        );
+      }
+    });
+
+    return success(res, null, 'Timetable saved successfully');
+  } catch (err) { next(err); }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// TEACHER TIMETABLE (7-day view for Teacher Profile)
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/timetable/teacher/:teacherId?academic_year_id=
+exports.getTeacherTimetable = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { teacherId } = req.params;
+    const { academic_year_id } = req.query;
+    if (!academic_year_id) return badRequest(res, 'academic_year_id is required');
+
+    const result = await query(
+      `SELECT te.day_of_week, ps.period_number, ps.label AS period_label, ps.start_time, ps.end_time,
+              s.name AS subject_name, sec.name AS section_name, g.name AS grade_name, te.room_no
+       FROM timetable_entries te
+       JOIN period_slots ps ON ps.id = te.period_slot_id
+       JOIN sections sec ON sec.id = te.section_id
+       JOIN grades g ON g.id = sec.grade_id
+       LEFT JOIN subjects s ON s.id = te.subject_id
+       WHERE te.school_id=@sid AND te.academic_year_id=@ayId AND te.teacher_id=@tid
+       ORDER BY te.day_of_week, ps.period_number`,
+      {
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        ayId: { type: sql.UniqueIdentifier, value: academic_year_id },
+        tid: { type: sql.UniqueIdentifier, value: teacherId },
+      }
+    );
+
+    const byDay = { 1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [] };
+    result.recordset.forEach((r) => { byDay[r.day_of_week]?.push(r); });
+
+    return success(res, { days: byDay, flat: result.recordset }, 'Teacher timetable fetched');
   } catch (err) { next(err); }
 };
