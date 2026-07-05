@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const c = require('../controllers/timetableController');
 const { authenticate, authorize } = require('../middleware/auth');
+router.use(authenticate);
 
 router.get('/periods', c.listPeriods);
 router.post('/periods/generate-defaults', c.generateDefaultPeriods);
