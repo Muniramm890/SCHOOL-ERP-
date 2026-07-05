@@ -239,12 +239,108 @@ exports.getLookups = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// ── POST /api/teachers/assignments ────────────────────────────────────────
-exports.assignSubject = async (req, res, next) => {
-    return res.status(501).json({ success: false, message: "assignSubject API is not implemented yet." });
+// ═══════════════════════════════════════════════════════════════
+// 🔴 SUBJECT ASSIGNMENT — real implementation (uses teacher_subjects table)
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/teachers/:userId/subjects
+// Ek teacher ke saare subject+section assignments — Teacher Profile ke
+// "Subjects & Timetable" tab ke liye, aur Timetable grid ke auto-suggest ke liye.
+exports.getTeacherSubjects = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { userId } = req.params;
+
+    const result = await query(
+      `SELECT ts.id, ts.subject_id, s.name AS subject_name,
+              ts.section_id, sec.name AS section_name, g.name AS grade_name, g.id AS grade_id
+       FROM teacher_subjects ts
+       JOIN subjects s ON s.id = ts.subject_id
+       JOIN sections sec ON sec.id = ts.section_id
+       JOIN grades g ON g.id = sec.grade_id
+       WHERE ts.school_id = @sid AND ts.teacher_user_id = @uid AND ts.is_active = 1 AND ts.deleted_at IS NULL
+       ORDER BY g.numeric_order, sec.name, s.name`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId }, uid: { type: sql.UniqueIdentifier, value: userId } }
+    );
+
+    return success(res, result.recordset, 'Teacher subject assignments fetched');
+  } catch (err) { next(err); }
 };
 
-// ── DELETE /api/teachers/assignments/:assignmentId ────────────────────────
+// GET /api/teachers/section-assignments?section_id=xxx
+// Ek section mein kaunsa teacher kaunsa subject padhata hai — Timetable
+// grid mein subject select karte hi teacher dropdown auto-suggest karta hai.
+exports.getSectionAssignments = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { section_id } = req.query;
+    if (!section_id) return badRequest(res, 'section_id is required');
+
+    const result = await query(
+      `SELECT ts.subject_id, s.name AS subject_name, ts.teacher_user_id, u.full_name AS teacher_name
+       FROM teacher_subjects ts
+       JOIN subjects s ON s.id = ts.subject_id
+       JOIN users u ON u.id = ts.teacher_user_id
+       WHERE ts.school_id = @sid AND ts.section_id = @secId AND ts.is_active = 1 AND ts.deleted_at IS NULL`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId }, secId: { type: sql.UniqueIdentifier, value: section_id } }
+    );
+
+    return success(res, result.recordset, 'Section subject-teacher map fetched');
+  } catch (err) { next(err); }
+};
+
+// POST /api/teachers/assignments
+// Body: { teacher_user_id, section_id, subject_id, academic_year_id }
+exports.assignSubject = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { teacher_user_id, section_id, subject_id, academic_year_id } = req.body;
+
+    if (!teacher_user_id || !section_id || !subject_id) {
+      return badRequest(res, 'teacher_user_id, section_id and subject_id are required');
+    }
+
+    // Is (section, subject) ke liye jo bhi purana active assignment hai use
+    // deactivate karo — DB unique-index error ki jagah clean replace ho jaye.
+    await query(
+      `UPDATE teacher_subjects SET is_active = 0, updated_at = GETUTCDATE()
+       WHERE school_id=@sid AND section_id=@secId AND subject_id=@subId AND is_active=1 AND deleted_at IS NULL`,
+      {
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        secId: { type: sql.UniqueIdentifier, value: section_id },
+        subId: { type: sql.UniqueIdentifier, value: subject_id },
+      }
+    );
+
+    const r = await query(
+      `INSERT INTO teacher_subjects (id, school_id, teacher_user_id, section_id, subject_id, academic_year_id)
+       OUTPUT INSERTED.id
+       VALUES (NEWID(), @sid, @tid, @secId, @subId, @ayId)`,
+      {
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        tid: { type: sql.UniqueIdentifier, value: teacher_user_id },
+        secId: { type: sql.UniqueIdentifier, value: section_id },
+        subId: { type: sql.UniqueIdentifier, value: subject_id },
+        ayId: { type: sql.UniqueIdentifier, value: academic_year_id || null },
+      }
+    );
+
+    return created(res, { id: r.recordset[0].id }, 'Teacher assigned to subject successfully');
+  } catch (err) { next(err); }
+};
+
+// DELETE /api/teachers/assignments/:assignmentId
 exports.removeAssignment = async (req, res, next) => {
-    return res.status(501).json({ success: false, message: "removeAssignment API is not implemented yet." });
+  try {
+    const { schoolId } = req.user;
+    const { assignmentId } = req.params;
+
+    await query(
+      `UPDATE teacher_subjects SET is_active = 0, deleted_at = GETUTCDATE(), updated_at = GETUTCDATE()
+       WHERE id = @id AND school_id = @sid`,
+      { id: { type: sql.UniqueIdentifier, value: assignmentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+
+    return success(res, null, 'Assignment removed successfully');
+  } catch (err) { next(err); }
 };
