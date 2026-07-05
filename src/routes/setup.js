@@ -23,8 +23,7 @@ router.post('/sections', authorize('school_admin'), ctrl.createSection);
 router.get('/subjects', ctrl.listSubjects);
 router.post('/subjects', authorize('school_admin'), ctrl.createSubject);
 
-router.get('/grade-subjects', setupController.listGradeSubjects);
-router.put('/grade-subjects', setupController.saveGradeSubjects);
+
 //-------------bulk entry___________________
 router.post('/bulk-academic', authorize('school_admin'), ctrl.bulkAcademicSetup);
 
