@@ -43,7 +43,10 @@ exports.listExams = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+
+
 // GET /api/exams/:id  (full detail: exam + participating sections)
+
 exports.getExam = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
