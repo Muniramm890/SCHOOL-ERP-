@@ -1,6 +1,6 @@
 // src/routes/exams.js
 const router = require('express').Router();
-const ctrl   = require('../controllers/examController'); // फ़ाइल का नाम चेक कर लें (examController है या examsController)
+const ctrl   = require('../controllers/examsController'); 
 const { authenticate, authorize } = require('../middleware/auth');
 
 router.use(authenticate);
