@@ -30,5 +30,6 @@ router.put('/:userId',              authorize('admin', 'principal'), ctrl.update
 // ═══════════════════════════════════════════════════════════════
 router.delete('/assignments/:assignmentId', authorize('admin', 'principal'), ctrl.removeAssignment);
 router.delete('/:userId',                   authorize('admin', 'principal'), ctrl.remove);
+router.get('/for-subject', ctrl.getTeachersForSubject);
 
 module.exports = router;
