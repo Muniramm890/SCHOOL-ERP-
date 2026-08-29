@@ -35,4 +35,11 @@ router.post('/bulk-academic', authorize('school_admin'), ctrl.bulkAcademicSetup)
 router.get('/academic-years', ctrl.listAcademicYears);
 router.post('/academic-years', authorize('school_admin'), ctrl.createAcademicYear);
 
+// Hard Deletion Endpoints (Restricted to Admin & Principal)
+router.delete('/grades/:id/hard',         authorize('admin', 'principal'), setupCtrl.hardDeleteGrade);
+router.delete('/sections/:id/hard',       authorize('admin', 'principal'), setupCtrl.hardDeleteSection);
+router.delete('/subjects/:id/hard',       authorize('admin', 'principal'), setupCtrl.hardDeleteSubject);
+router.delete('/grade-subjects/unlink',   authorize('admin', 'principal'), setupCtrl.removeGradeSubject);
+
+
 module.exports = router;
