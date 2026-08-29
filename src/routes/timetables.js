@@ -16,4 +16,7 @@ router.put('/section', c.saveSectionTimetable);
 
 router.get('/teacher/:teacherId', c.getTeacherTimetable);
 
+router.put('/periods', authorize('school_admin'), c.savePeriodsBulk);
+router.get('/check-conflict', c.checkConflict);
+
 module.exports = router;
