@@ -344,3 +344,36 @@ exports.removeAssignment = async (req, res, next) => {
     return success(res, null, 'Assignment removed successfully');
   } catch (err) { next(err); }
 };
+
+// GET /api/teachers/for-subject?subject_id=xxx
+// Suggested teachers: pehle wo jo already kahi is subject ko padha rahe hain,
+// fallback me wo jinka department subject name se match kare (fresh setup ke liye).
+exports.getTeachersForSubject = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { subject_id } = req.query;
+    if (!subject_id) return badRequest(res, 'subject_id is required');
+
+    const result = await query(
+      `SELECT DISTINCT u.id AS user_id, u.full_name
+       FROM teacher_subjects ts
+       JOIN users u ON u.id = ts.teacher_user_id
+       JOIN school_members sm ON sm.user_id = u.id AND sm.school_id = ts.school_id AND sm.is_active = 1
+       WHERE ts.school_id = @sid AND ts.subject_id = @subId AND ts.is_active = 1 AND ts.deleted_at IS NULL
+
+       UNION
+
+       SELECT u.id AS user_id, u.full_name
+       FROM staff_profiles sp
+       JOIN users u ON u.id = sp.user_id
+       JOIN school_members sm ON sm.user_id = u.id AND sm.school_id = sp.school_id AND sm.role = 'teacher' AND sm.is_active = 1
+       JOIN subjects s ON s.school_id = sp.school_id AND s.id = @subId
+       WHERE sp.school_id = @sid AND sp.department = s.name
+
+       ORDER BY full_name`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId }, subId: { type: sql.UniqueIdentifier, value: subject_id } }
+    );
+
+    return success(res, result.recordset, 'Suggested teachers fetched');
+  } catch (err) { next(err); }
+};
