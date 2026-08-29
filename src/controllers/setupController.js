@@ -271,6 +271,8 @@ exports.updateSchool = async (req, res, next) => {
 
 // ═══════════════ 🔴 GRADE-SUBJECTS (Class-level subject mapping) ═══════════
 
+// ═══════════════ 🔴 GRADE-SUBJECTS (Class-level subject mapping) ═══════════
+
 // GET /api/setup/grade-subjects?grade_id=xxx
 exports.listGradeSubjects = async (req, res, next) => {
   try {
@@ -280,10 +282,10 @@ exports.listGradeSubjects = async (req, res, next) => {
     if (!grade_id) return notFound(res, 'grade_id query param is required');
 
     const result = await query(
-      `SELECT s.id, s.name, s.category, gs.id AS grade_subject_id
+      `SELECT s.id, s.name, s.category
        FROM grade_subjects gs
        JOIN subjects s ON s.id = gs.subject_id AND s.deleted_at IS NULL
-       WHERE gs.school_id = @sid AND gs.grade_id = @gid AND gs.is_active = 1
+       WHERE gs.school_id = @sid AND gs.grade_id = @gid
        ORDER BY s.name`,
       {
         sid: { type: sql.UniqueIdentifier, value: schoolId },
@@ -353,7 +355,7 @@ exports.saveGradeSubjects = async (req, res, next) => {
         rIns2.input('gid', sql.UniqueIdentifier, grade_id);
         rIns2.input('subid', sql.UniqueIdentifier, subjectId);
         await rIns2.query(
-          `INSERT INTO grade_subjects (id, school_id, grade_id, subject_id) VALUES (NEWID(), @sid, @gid, @subid)`
+          `INSERT INTO grade_subjects (school_id, grade_id, subject_id) VALUES (@sid, @gid, @subid)`
         );
       }
     });
@@ -361,6 +363,7 @@ exports.saveGradeSubjects = async (req, res, next) => {
     return success(res, null, 'Subjects synced for this class successfully');
   } catch (err) { next(err); }
 };
+
 
 // 🔥 NEW: Premium Bulk Matrix Setup API
 // 🔥 NEW: Premium Bulk Matrix Setup API
@@ -432,3 +435,138 @@ exports.bulkAcademicSetup = async (req, res, next) => {
     return success(res, null, 'Academic matrix built successfully');
   } catch (err) { next(err); }
 };
+
+
+// ═══════════════ HARD DELETE OPERATIONS (ADMIN / PRINCIPAL ONLY) ═══════════
+
+// DELETE /api/setup/grades/:id/hard
+exports.hardDeleteGrade = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { id } = req.params;
+
+    // चेक करें कि क्या इस क्लास के अंदर सेक्शन्स या स्टूडेंट्स मौजूद हैं
+    const activeSections = await queryOne(
+      `SELECT COUNT(*) AS total FROM sections WHERE grade_id=@gid AND school_id=@sid`,
+      { gid: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+
+    if (activeSections && activeSections.total > 0) {
+      return badRequest(res, 'Cannot delete grade: please delete its sections first');
+    }
+
+    await withTransaction(async (tx) => {
+      // 1. Grade-Subject mappings साफ़ करें
+      const rGS = tx.request();
+      rGS.input('gid', sql.UniqueIdentifier, id);
+      rGS.input('sid', sql.UniqueIdentifier, schoolId);
+      await rGS.query(`DELETE FROM grade_subjects WHERE grade_id=@gid AND school_id=@sid`);
+
+      // 2. Grade को स्थायी रूप से हटाएँ
+      const rG = tx.request();
+      rG.input('gid', sql.UniqueIdentifier, id);
+      rG.input('sid', sql.UniqueIdentifier, schoolId);
+      await rG.query(`DELETE FROM grades WHERE id=@gid AND school_id=@sid`);
+    });
+
+    return success(res, null, 'Grade permanently deleted');
+  } catch (err) { next(err); }
+};
+
+// DELETE /api/setup/sections/:id/hard
+exports.hardDeleteSection = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { id } = req.params;
+
+    // चेक करें कि क्या इस सेक्शन में स्टूडेंट्स एनरोल हैं
+    const studentCount = await queryOne(
+      `SELECT COUNT(*) AS total FROM enrolments WHERE section_id=@secid AND school_id=@sid`,
+      { secid: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+
+    if (studentCount && studentCount.total > 0) {
+      return badRequest(res, 'Cannot delete section: active student enrolments exist in this section');
+    }
+
+    await withTransaction(async (tx) => {
+      // संबंधित टाइमटेबल और असाइनमेंट्स साफ़ करें
+      const rTT = tx.request();
+      rTT.input('secid', sql.UniqueIdentifier, id);
+      rTT.input('sid', sql.UniqueIdentifier, schoolId);
+      await rTT.query(`DELETE FROM timetable_entries WHERE section_id=@secid AND school_id=@sid`);
+
+      const rTS = tx.request();
+      rTS.input('secid', sql.UniqueIdentifier, id);
+      rTS.input('sid', sql.UniqueIdentifier, schoolId);
+      await rTS.query(`DELETE FROM teacher_subjects WHERE section_id=@secid AND school_id=@sid`);
+
+      const rSec = tx.request();
+      rSec.input('secid', sql.UniqueIdentifier, id);
+      rSec.input('sid', sql.UniqueIdentifier, schoolId);
+      await rSec.query(`DELETE FROM sections WHERE id=@secid AND school_id=@sid`);
+    });
+
+    return success(res, null, 'Section permanently deleted');
+  } catch (err) { next(err); }
+};
+
+// DELETE /api/setup/subjects/:id/hard
+exports.hardDeleteSubject = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { id } = req.params;
+
+    await withTransaction(async (tx) => {
+      // 1. क्लास मैपिंग से हटाएँ
+      const rGS = tx.request();
+      rGS.input('subid', sql.UniqueIdentifier, id);
+      rGS.input('sid', sql.UniqueIdentifier, schoolId);
+      await rGS.query(`DELETE FROM grade_subjects WHERE subject_id=@subid AND school_id=@sid`);
+
+      // 2. टीचर असाइनमेंट और टाइमटेबल से हटाएँ
+      const rTS = tx.request();
+      rTS.input('subid', sql.UniqueIdentifier, id);
+      rTS.input('sid', sql.UniqueIdentifier, schoolId);
+      await rTS.query(`DELETE FROM teacher_subjects WHERE subject_id=@subid AND school_id=@sid`);
+
+      const rTT = tx.request();
+      rTT.input('subid', sql.UniqueIdentifier, id);
+      rTT.input('sid', sql.UniqueIdentifier, schoolId);
+      await rTT.query(`DELETE FROM timetable_entries WHERE subject_id=@subid AND school_id=@sid`);
+
+      // 3. मास्टर सब्जेक्ट टेबल से स्थायी रूप से हटाएँ
+      const rSub = tx.request();
+      rSub.input('subid', sql.UniqueIdentifier, id);
+      rSub.input('sid', sql.UniqueIdentifier, schoolId);
+      await rSub.query(`DELETE FROM subjects WHERE id=@subid AND school_id=@sid`);
+    });
+
+    return success(res, null, 'Subject permanently deleted');
+  } catch (err) { next(err); }
+};
+
+// DELETE /api/setup/grade-subjects?grade_id=xxx&subject_id=xxx
+exports.removeGradeSubject = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { grade_id, subject_id } = req.query;
+
+    if (!grade_id || !subject_id) {
+      return badRequest(res, 'Both grade_id and subject_id are required');
+    }
+
+    await query(
+      `DELETE FROM grade_subjects 
+       WHERE school_id=@sid AND grade_id=@gid AND subject_id=@subid`,
+      {
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        gid: { type: sql.UniqueIdentifier, value: grade_id },
+        subid: { type: sql.UniqueIdentifier, value: subject_id }
+      }
+    );
+
+    return success(res, null, 'Subject unlinked from class successfully');
+  } catch (err) { next(err); }
+};
+
