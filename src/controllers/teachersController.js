@@ -268,8 +268,6 @@ exports.getTeacherSubjects = async (req, res, next) => {
 };
 
 // GET /api/teachers/section-assignments?section_id=xxx
-// Ek section mein kaunsa teacher kaunsa subject padhata hai — Timetable
-// grid mein subject select karte hi teacher dropdown auto-suggest karta hai.
 exports.getSectionAssignments = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -277,11 +275,12 @@ exports.getSectionAssignments = async (req, res, next) => {
     if (!section_id) return badRequest(res, 'section_id is required');
 
     const result = await query(
-      `SELECT ts.subject_id, s.name AS subject_name, ts.teacher_user_id, u.full_name AS teacher_name
+      `SELECT ts.id AS assignment_id, ts.subject_id, s.name AS subject_name, ts.teacher_user_id, u.full_name AS teacher_name
        FROM teacher_subjects ts
        JOIN subjects s ON s.id = ts.subject_id
        JOIN users u ON u.id = ts.teacher_user_id
-       WHERE ts.school_id = @sid AND ts.section_id = @secId AND ts.is_active = 1 AND ts.deleted_at IS NULL`,
+       WHERE ts.school_id = @sid AND ts.section_id = @secId AND ts.is_active = 1 AND ts.deleted_at IS NULL
+       ORDER BY s.name, u.full_name`,
       { sid: { type: sql.UniqueIdentifier, value: schoolId }, secId: { type: sql.UniqueIdentifier, value: section_id } }
     );
 
