@@ -290,7 +290,6 @@ exports.getSectionAssignments = async (req, res, next) => {
 };
 
 // POST /api/teachers/assignments
-// Body: { teacher_user_id, section_id, subject_id, academic_year_id }
 exports.assignSubject = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
