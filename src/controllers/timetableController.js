@@ -13,13 +13,16 @@ exports.listPeriods = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const result = await query(
-      `SELECT id, period_number, label, start_time, end_time, is_break, is_active
+      `SELECT id, period_number, label, is_break, is_active,
+              LEFT(CONVERT(varchar, start_time, 108), 5) AS start_time,
+              LEFT(CONVERT(varchar, end_time, 108), 5) AS end_time
        FROM period_slots WHERE school_id=@sid AND is_active=1 ORDER BY period_number`,
       { sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
     return success(res, result.recordset, 'Periods fetched');
   } catch (err) { next(err); }
 };
+
 
 // POST /api/timetable/periods/generate-defaults
 // Uses schools.periods_per_day / period_duration_min / school_start_time to
@@ -229,7 +232,9 @@ exports.getTeacherTimetable = async (req, res, next) => {
     if (!academic_year_id) return badRequest(res, 'academic_year_id is required');
 
     const result = await query(
-      `SELECT te.day_of_week, ps.period_number, ps.label AS period_label, ps.start_time, ps.end_time,
+      `SELECT te.day_of_week, ps.period_number, ps.label AS period_label, 
+              LEFT(CONVERT(varchar, ps.start_time, 108), 5) AS start_time, 
+              LEFT(CONVERT(varchar, ps.end_time, 108), 5) AS end_time,
               s.name AS subject_name, sec.name AS section_name, g.name AS grade_name, te.room_no
        FROM timetable_entries te
        JOIN period_slots ps ON ps.id = te.period_slot_id
@@ -251,6 +256,7 @@ exports.getTeacherTimetable = async (req, res, next) => {
     return success(res, { days: byDay, flat: result.recordset }, 'Teacher timetable fetched');
   } catch (err) { next(err); }
 };
+
 
 
 // PUT /api/timetable/periods  { periods: [{ label, start_time, end_time, is_break }] }
