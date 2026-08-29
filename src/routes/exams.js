@@ -1,6 +1,6 @@
 // src/routes/exams.js
 const router = require('express').Router();
-const ctrl   = require('../controllers/examsController'); 
+const ctrl   = require('../controllers/examController'); 
 const { authenticate, authorize } = require('../middleware/auth');
 
 router.use(authenticate);
