@@ -251,3 +251,79 @@ exports.getTeacherTimetable = async (req, res, next) => {
     return success(res, { days: byDay, flat: result.recordset }, 'Teacher timetable fetched');
   } catch (err) { next(err); }
 };
+
+
+// PUT /api/timetable/periods  { periods: [{ label, start_time, end_time, is_break }] }
+// Full-day routine builder — SINGLE call replaces the entire day structure.
+exports.savePeriodsBulk = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { periods } = req.body;
+    if (!Array.isArray(periods) || periods.length === 0) {
+      return badRequest(res, 'periods[] is required');
+    }
+    for (const p of periods) {
+      if (!p.label || !p.start_time || !p.end_time) {
+        return badRequest(res, 'Each period needs label, start_time and end_time');
+      }
+    }
+
+    await withTransaction(async (tx) => {
+      const rDel = tx.request();
+      rDel.input('sid', sql.UniqueIdentifier, schoolId);
+      await rDel.query(`DELETE FROM period_slots WHERE school_id=@sid`);
+
+      for (let i = 0; i < periods.length; i++) {
+        const p = periods[i];
+        const r = tx.request();
+        r.input('sid', sql.UniqueIdentifier, schoolId);
+        r.input('num', sql.SmallInt, i + 1);
+        r.input('label', sql.NVarChar(50), p.label);
+        r.input('st', sql.VarChar(15), p.start_time.length === 5 ? `${p.start_time}:00` : p.start_time);
+        r.input('et', sql.VarChar(15), p.end_time.length === 5 ? `${p.end_time}:00` : p.end_time);
+        r.input('brk', sql.Bit, p.is_break ? 1 : 0);
+        await r.query(
+          `INSERT INTO period_slots (id, school_id, period_number, label, start_time, end_time, is_break)
+           VALUES (NEWID(), @sid, @num, @label, CAST(@st AS TIME), CAST(@et AS TIME), @brk)`
+        );
+      }
+    });
+
+    return success(res, null, 'Daily routine saved successfully');
+  } catch (err) { next(err); }
+};
+
+// GET /api/timetable/check-conflict?academic_year_id=&day_of_week=&period_slot_id=&teacher_id=&exclude_section_id=
+// Real-time check — called the instant a teacher is picked in the grid.
+exports.checkConflict = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { academic_year_id, day_of_week, period_slot_id, teacher_id, exclude_section_id } = req.query;
+    if (!academic_year_id || !day_of_week || !period_slot_id || !teacher_id) {
+      return badRequest(res, 'academic_year_id, day_of_week, period_slot_id and teacher_id are required');
+    }
+
+    const existing = await queryOne(
+      `SELECT TOP 1 sec.name AS section_name, g.name AS grade_name
+       FROM timetable_entries te
+       JOIN sections sec ON sec.id = te.section_id
+       JOIN grades g ON g.id = sec.grade_id
+       WHERE te.school_id=@sid AND te.academic_year_id=@ayId AND te.day_of_week=@day
+         AND te.period_slot_id=@slot AND te.teacher_id=@tid
+         AND (@excludeSec IS NULL OR te.section_id <> @excludeSec)`,
+      {
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        ayId: { type: sql.UniqueIdentifier, value: academic_year_id },
+        day: { type: sql.TinyInt, value: Number(day_of_week) },
+        slot: { type: sql.UniqueIdentifier, value: period_slot_id },
+        tid: { type: sql.UniqueIdentifier, value: teacher_id },
+        excludeSec: { type: sql.UniqueIdentifier, value: exclude_section_id || null },
+      }
+    );
+
+    if (existing) {
+      return success(res, { conflict: true, with: `${existing.grade_name} - ${existing.section_name}` });
+    }
+    return success(res, { conflict: false });
+  } catch (err) { next(err); }
+};
