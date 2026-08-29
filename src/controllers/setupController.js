@@ -1,6 +1,6 @@
 // src/controllers/setupController.js
 const { query, queryOne, withTransaction, sql } = require('../config/db');
-const { success, created, notFound } = require('../utils/response');
+const { success, created, notFound, badRequest } = require('../utils/response');
 const { audit } = require('../utils/audit');
 
 // ═══════════════ GRADES / CLASSES ═════════════════════════════════════════
