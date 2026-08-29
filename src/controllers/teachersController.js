@@ -290,6 +290,7 @@ exports.getSectionAssignments = async (req, res, next) => {
 };
 
 // POST /api/teachers/assignments
+
 exports.assignSubject = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -299,17 +300,18 @@ exports.assignSubject = async (req, res, next) => {
       return badRequest(res, 'teacher_user_id, section_id and subject_id are required');
     }
 
-    // Is (section, subject) ke liye jo bhi purana active assignment hai use
-    // deactivate karo — DB unique-index error ki jagah clean replace ho jaye.
-    await query(
-      `UPDATE teacher_subjects SET is_active = 0, updated_at = GETUTCDATE()
-       WHERE school_id=@sid AND section_id=@secId AND subject_id=@subId AND is_active=1 AND deleted_at IS NULL`,
+    const dup = await queryOne(
+      `SELECT id FROM teacher_subjects
+       WHERE school_id=@sid AND section_id=@secId AND subject_id=@subId AND teacher_user_id=@tid
+         AND is_active=1 AND deleted_at IS NULL`,
       {
         sid: { type: sql.UniqueIdentifier, value: schoolId },
         secId: { type: sql.UniqueIdentifier, value: section_id },
         subId: { type: sql.UniqueIdentifier, value: subject_id },
+        tid: { type: sql.UniqueIdentifier, value: teacher_user_id },
       }
     );
+    if (dup) return badRequest(res, 'This teacher is already assigned to this subject for this class.');
 
     const r = await query(
       `INSERT INTO teacher_subjects (id, school_id, teacher_user_id, section_id, subject_id, academic_year_id)
