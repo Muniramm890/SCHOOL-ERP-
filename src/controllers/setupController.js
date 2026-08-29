@@ -212,13 +212,21 @@ exports.createAcademicYear = async (req, res, next) => {
 exports.getSchool = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
+    
+    // SQL SERVER में TIME को HH:mm (जैसे "08:30") में भेजने के लिए CONVERT का इस्तेमाल
     const school = await queryOne(
-      `SELECT * FROM schools WHERE id=@sid AND deleted_at IS NULL`,
+      `SELECT *, 
+              LEFT(CONVERT(varchar, school_start_time, 108), 5) AS school_start_time,
+              LEFT(CONVERT(varchar, school_end_time, 108), 5) AS school_end_time
+       FROM schools 
+       WHERE id=@sid AND deleted_at IS NULL`,
       { sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
+    
     return success(res, school);
   } catch (err) { next(err); }
 };
+
 
 // ═══════════════ SCHOOL SETTINGS & BULK SETUP ════════════════════════════
 
