@@ -25,8 +25,7 @@ exports.listPeriods = async (req, res, next) => {
 
 
 // POST /api/timetable/periods/generate-defaults
-// Uses schools.periods_per_day / period_duration_min / school_start_time to
-// auto-generate a starting structure — minimal manual entry.
+// 🔴 SOLID LOGIC: Updates existing periods based on School Timings without deleting the grid.
 exports.generateDefaultPeriods = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -39,12 +38,19 @@ exports.generateDefaultPeriods = async (req, res, next) => {
 
     const periodsPerDay = school.periods_per_day || 8;
     const duration = school.period_duration_min || 45;
-    let [h, m] = (school.school_start_time || '08:00:00').toString().split(':').map(Number);
+    
+    // Time formatting handle
+    let startTimeStr = school.school_start_time;
+    if (typeof startTimeStr !== 'string') {
+       startTimeStr = startTimeStr.toISOString ? startTimeStr.toISOString().split('T')[1] : '08:00:00';
+    }
+    let [h, m] = startTimeStr.split(':').map(Number);
 
     await withTransaction(async (tx) => {
-      const rDel = tx.request();
-      rDel.input('sid', sql.UniqueIdentifier, schoolId);
-      await rDel.query(`DELETE FROM period_slots WHERE school_id=@sid`);
+      const rFetch = tx.request();
+      rFetch.input('sid', sql.UniqueIdentifier, schoolId);
+      const existingRes = await rFetch.query(`SELECT id, period_number FROM period_slots WHERE school_id=@sid`);
+      const existingSlots = existingRes.recordset;
 
       for (let i = 1; i <= periodsPerDay; i++) {
         const startH = h, startM = m;
@@ -53,21 +59,50 @@ exports.generateDefaultPeriods = async (req, res, next) => {
         m = m % 60;
         const startStr = `${String(startH).padStart(2, '0')}:${String(startM).padStart(2, '0')}:00`;
         const endStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
+        const label = `Period ${i}`;
 
-        const r = tx.request();
-        r.input('sid', sql.UniqueIdentifier, schoolId);
-        r.input('num', sql.SmallInt, i);
-        r.input('label', sql.NVarChar(50), `Period ${i}`);
-        r.input('st', sql.VarChar(15), startStr);
-        r.input('et', sql.VarChar(15), endStr);
-        await r.query(
-          `INSERT INTO period_slots (id, school_id, period_number, label, start_time, end_time)
-           VALUES (NEWID(), @sid, @num, @label, CAST(@st AS TIME), CAST(@et AS TIME))`
-        );
+        const existing = existingSlots.find(e => e.period_number === i);
+
+        if (existing) {
+          // UPDATE
+          const rUpd = tx.request();
+          rUpd.input('id', sql.UniqueIdentifier, existing.id);
+          rUpd.input('st', sql.VarChar(15), startStr);
+          rUpd.input('et', sql.VarChar(15), endStr);
+          await rUpd.query(
+            `UPDATE period_slots SET start_time=CAST(@st AS TIME), end_time=CAST(@et AS TIME), updated_at=GETUTCDATE() WHERE id=@id`
+          );
+        } else {
+          // INSERT
+          const rIns = tx.request();
+          rIns.input('sid', sql.UniqueIdentifier, schoolId);
+          rIns.input('num', sql.SmallInt, i);
+          rIns.input('label', sql.NVarChar(50), label);
+          rIns.input('st', sql.VarChar(15), startStr);
+          rIns.input('et', sql.VarChar(15), endStr);
+          await rIns.query(
+            `INSERT INTO period_slots (id, school_id, period_number, label, start_time, end_time, is_break) 
+             VALUES (NEWID(), @sid, @num, @label, CAST(@st AS TIME), CAST(@et AS TIME), 0)`
+          );
+        }
+      }
+
+      // DELETE ONLY IF PERIODS WERE REDUCED
+      if (existingSlots.length > periodsPerDay) {
+        const slotsToDelete = existingSlots.filter(e => e.period_number > periodsPerDay);
+        for (const slot of slotsToDelete) {
+          const rDelTT = tx.request();
+          rDelTT.input('slotId', sql.UniqueIdentifier, slot.id);
+          await rDelTT.query(`DELETE FROM timetable_entries WHERE period_slot_id=@slotId`);
+
+          const rDelSlot = tx.request();
+          rDelSlot.input('slotId', sql.UniqueIdentifier, slot.id);
+          await rDelSlot.query(`DELETE FROM period_slots WHERE id=@slotId`);
+        }
       }
     });
 
-    return success(res, null, `${periodsPerDay} periods generated successfully`);
+    return success(res, null, `${periodsPerDay} periods synced! Timetable remains intact.`);
   } catch (err) { next(err); }
 };
 
@@ -260,7 +295,7 @@ exports.getTeacherTimetable = async (req, res, next) => {
 
 
 // PUT /api/timetable/periods  { periods: [{ label, start_time, end_time, is_break }] }
-// Full-day routine builder — SINGLE call replaces the entire day structure.
+
 exports.savePeriodsBulk = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -275,29 +310,70 @@ exports.savePeriodsBulk = async (req, res, next) => {
     }
 
     await withTransaction(async (tx) => {
-      const rDel = tx.request();
-      rDel.input('sid', sql.UniqueIdentifier, schoolId);
-      await rDel.query(`DELETE FROM period_slots WHERE school_id=@sid`);
+      // 1. डेटाबेस में पहले से मौजूद पीरियड्स निकालें
+      const rFetch = tx.request();
+      rFetch.input('sid', sql.UniqueIdentifier, schoolId);
+      const existingRes = await rFetch.query(`SELECT id, period_number FROM period_slots WHERE school_id=@sid`);
+      const existingSlots = existingRes.recordset;
 
       for (let i = 0; i < periods.length; i++) {
         const p = periods[i];
-        const r = tx.request();
-        r.input('sid', sql.UniqueIdentifier, schoolId);
-        r.input('num', sql.SmallInt, i + 1);
-        r.input('label', sql.NVarChar(50), p.label);
-        r.input('st', sql.VarChar(15), p.start_time.length === 5 ? `${p.start_time}:00` : p.start_time);
-        r.input('et', sql.VarChar(15), p.end_time.length === 5 ? `${p.end_time}:00` : p.end_time);
-        r.input('brk', sql.Bit, p.is_break ? 1 : 0);
-        await r.query(
-          `INSERT INTO period_slots (id, school_id, period_number, label, start_time, end_time, is_break)
-           VALUES (NEWID(), @sid, @num, @label, CAST(@st AS TIME), CAST(@et AS TIME), @brk)`
-        );
+        const periodNum = i + 1; // 1, 2, 3...
+        
+        const existing = existingSlots.find(e => e.period_number === periodNum);
+        
+        const st = p.start_time.length === 5 ? `${p.start_time}:00` : p.start_time;
+        const et = p.end_time.length === 5 ? `${p.end_time}:00` : p.end_time;
+
+        if (existing) {
+          // 🔴 UPDATE existing slot: (इससे टाइमटेबल की लिंकिंग सुरक्षित रहेगी)
+          const rUpd = tx.request();
+          rUpd.input('id', sql.UniqueIdentifier, existing.id);
+          rUpd.input('label', sql.NVarChar(50), p.label);
+          rUpd.input('st', sql.VarChar(15), st);
+          rUpd.input('et', sql.VarChar(15), et);
+          rUpd.input('brk', sql.Bit, p.is_break ? 1 : 0);
+          await rUpd.query(
+            `UPDATE period_slots 
+             SET label=@label, start_time=CAST(@st AS TIME), end_time=CAST(@et AS TIME), is_break=@brk, updated_at=GETUTCDATE()
+             WHERE id=@id`
+          );
+        } else {
+          // 🟢 INSERT new slot (अगर यूज़र ने पीरियड्स बढ़ा दिए हैं, e.g., 8 से 9 कर दिए)
+          const rIns = tx.request();
+          rIns.input('sid', sql.UniqueIdentifier, schoolId);
+          rIns.input('num', sql.SmallInt, periodNum);
+          rIns.input('label', sql.NVarChar(50), p.label);
+          rIns.input('st', sql.VarChar(15), st);
+          rIns.input('et', sql.VarChar(15), et);
+          rIns.input('brk', sql.Bit, p.is_break ? 1 : 0);
+          await rIns.query(
+            `INSERT INTO period_slots (id, school_id, period_number, label, start_time, end_time, is_break)
+             VALUES (NEWID(), @sid, @num, @label, CAST(@st AS TIME), CAST(@et AS TIME), @brk)`
+          );
+        }
+      }
+
+      // 🟡 DELETE extra slots: (अगर यूज़र ने पीरियड्स 9 से 8 कर दिए, तो सिर्फ एक्स्ट्रा वाला डिलीट होगा)
+      const incomingCount = periods.length;
+      if (existingSlots.length > incomingCount) {
+        const slotsToDelete = existingSlots.filter(e => e.period_number > incomingCount);
+        for (const slot of slotsToDelete) {
+          const rDelTT = tx.request();
+          rDelTT.input('slotId', sql.UniqueIdentifier, slot.id);
+          await rDelTT.query(`DELETE FROM timetable_entries WHERE period_slot_id=@slotId`);
+
+          const rDelSlot = tx.request();
+          rDelSlot.input('slotId', sql.UniqueIdentifier, slot.id);
+          await rDelSlot.query(`DELETE FROM period_slots WHERE id=@slotId`);
+        }
       }
     });
 
-    return success(res, null, 'Daily routine saved successfully');
+    return success(res, null, 'Daily routine updated! Your Timetable is perfectly preserved.');
   } catch (err) { next(err); }
 };
+
 
 // GET /api/timetable/check-conflict?academic_year_id=&day_of_week=&period_slot_id=&teacher_id=&exclude_section_id=
 // Real-time check — called the instant a teacher is picked in the grid.
