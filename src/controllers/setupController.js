@@ -305,19 +305,13 @@ exports.listGradeSubjects = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// PUT /api/setup/grade-subjects
-// Body: { grade_id: "uuid", subjects: ["Mathematics", "Physics", "Custom Subject"] }
 exports.saveGradeSubjects = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
-    const { grade_id, subjects } = req.body;
+    const { grade_id, subject_ids } = req.body;
 
     if (!grade_id) return notFound(res, 'grade_id is required');
-    if (!Array.isArray(subjects)) return notFound(res, 'subjects must be an array of names');
-
-    const cleanNames = [...new Set(
-      subjects.map((n) => (n || '').toString().trim()).filter(Boolean)
-    )];
+    if (!Array.isArray(subject_ids)) return notFound(res, 'subject_ids must be an array');
 
     const grade = await queryOne(
       `SELECT id FROM grades WHERE id=@gid AND school_id=@sid AND deleted_at IS NULL`,
@@ -326,52 +320,23 @@ exports.saveGradeSubjects = async (req, res, next) => {
     if (!grade) return notFound(res, 'Grade/Class not found for this school');
 
     await withTransaction(async (tx) => {
-      const subjectIds = [];
-
-      for (const name of cleanNames) {
-        const rFind = tx.request();
-        rFind.input('sid', sql.UniqueIdentifier, schoolId);
-        rFind.input('name', sql.NVarChar(200), name);
-        const existing = await rFind.query(
-          `SELECT TOP 1 id FROM subjects WHERE school_id=@sid AND LOWER(name)=LOWER(@name) AND deleted_at IS NULL`
-        );
-
-        let subjectId;
-        if (existing.recordset.length > 0) {
-          subjectId = existing.recordset[0].id;
-        } else {
-          const rIns = tx.request();
-          rIns.input('sid', sql.UniqueIdentifier, schoolId);
-          rIns.input('name', sql.NVarChar(200), name);
-          rIns.input('cat', sql.VarChar(50), 'core');
-          const createdRow = await rIns.query(
-            `INSERT INTO subjects (id, school_id, name, category) OUTPUT INSERTED.id VALUES (NEWID(), @sid, @name, @cat)`
-          );
-          subjectId = createdRow.recordset[0].id;
-        }
-        subjectIds.push(subjectId);
-      }
-
       const rDel = tx.request();
       rDel.input('sid', sql.UniqueIdentifier, schoolId);
       rDel.input('gid', sql.UniqueIdentifier, grade_id);
       await rDel.query(`DELETE FROM grade_subjects WHERE school_id=@sid AND grade_id=@gid`);
 
-      for (const subjectId of subjectIds) {
-        const rIns2 = tx.request();
-        rIns2.input('sid', sql.UniqueIdentifier, schoolId);
-        rIns2.input('gid', sql.UniqueIdentifier, grade_id);
-        rIns2.input('subid', sql.UniqueIdentifier, subjectId);
-        await rIns2.query(
-          `INSERT INTO grade_subjects (school_id, grade_id, subject_id) VALUES (@sid, @gid, @subid)`
-        );
+      for (const subId of subject_ids) {
+        const r = tx.request();
+        r.input('sid', sql.UniqueIdentifier, schoolId);
+        r.input('gid', sql.UniqueIdentifier, grade_id);
+        r.input('subid', sql.UniqueIdentifier, subId);
+        await r.query(`INSERT INTO grade_subjects (id, school_id, grade_id, subject_id) VALUES (NEWID(), @sid, @gid, @subid)`);
       }
     });
 
     return success(res, null, 'Subjects synced for this class successfully');
   } catch (err) { next(err); }
 };
-
 
 // 🔥 NEW: Premium Bulk Matrix Setup API
 // 🔥 NEW: Premium Bulk Matrix Setup API
