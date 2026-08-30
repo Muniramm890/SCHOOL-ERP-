@@ -259,3 +259,50 @@ exports.remove = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// ── POST /api/quick-tests/gas-sync ─────────────────────────────────────────
+// 🔴 AZURE PROXY: Frontend -> Azure -> GAS -> Azure -> Frontend
+exports.gasSync = async (req, res, next) => {
+  try {
+    // 1. JWT से सुरक्षित डेटा निकालें (Frontend इसे नहीं बदल सकता)
+    const { schoolId, role, email, name } = req.user; 
+    const { action, payload = {} } = req.body;
+
+    if (!action) return badRequest(res, "Action is required for GAS sync.");
+
+    // 2. .env फ़ाइल में अपना GAS URL डालें (अभी के लिए यहाँ हार्डकोड कर सकते हैं)
+    const GAS_URL = process.env.GAS_API_URL || " GAS_URL";
+
+    // 3. Payload में स्कूल और यूज़र की सुरक्षित पहचान (Identity) मिलाएँ
+    const securePayload = {
+      ...payload,
+      schoolId: schoolId,          // 👈 SaaS Magic: हर स्कूल का डेटा अलग रहेगा
+      verifiedRole: role,
+      verifiedEmail: email,
+      operator: name
+    };
+
+    // 4. GAS को भेजने के लिए FormData (URLSearchParams) तैयार करें
+    const formData = new URLSearchParams();
+    formData.append('action', action);
+    Object.keys(securePayload).forEach(key => {
+      const val = typeof securePayload[key] === 'object' ? JSON.stringify(securePayload[key]) : securePayload[key];
+      formData.append(key, val);
+    });
+
+    // 5. Server-to-Server API Call (Azure to Google)
+    const gasResponse = await fetch(GAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formData
+    });
+
+    const data = await gasResponse.json();
+
+    // 6. GAS का रिस्पांस सीधा Frontend को लौटा दें
+    return res.status(200).json(data);
+  } catch (err) {
+    console.error("Azure Proxy Error:", err);
+    next(err);
+  }
+};
+
