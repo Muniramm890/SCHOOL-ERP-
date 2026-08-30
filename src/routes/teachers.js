@@ -6,6 +6,14 @@ router.use(authenticate);
 // ═══════════════════════════════════════════════════════════════
 // GET — literal routes FIRST, dynamic :userId routes LAST
 // ═══════════════════════════════════════════════════════════════
+
+router.get('/subject-teachers/all', ctrl.getAllSubjectTeachers);
+router.get('/subject-teachers', ctrl.getSubjectTeachers);
+router.post('/subject-teachers', authorize('school_admin'), ctrl.assignSubjectTeacher);
+router.delete('/subject-teachers/:id', authorize('school_admin'), ctrl.removeSubjectTeacher);
+router.get('/:userId/assigned-subjects', ctrl.getTeacherAssignedSubjects);
+
+// ... existing router.get('/:userId', ctrl.getOne) MUST come AFTER these
 router.get('/',                    ctrl.list);
 router.get('/lookups',             ctrl.getLookups);
 router.get('/section-assignments', ctrl.getSectionAssignments);
@@ -24,6 +32,7 @@ router.post('/assignments', authorize('admin', 'principal'), ctrl.assignSubject)
 // ═══════════════════════════════════════════════════════════════
 router.put('/assign-class-teacher', authorize('admin', 'principal'), ctrl.assignClassTeacher);
 router.put('/:userId',              authorize('admin', 'principal'), ctrl.update);
+
 
 // ═══════════════════════════════════════════════════════════════
 // DELETE — literal routes FIRST, dynamic :userId route LAST
