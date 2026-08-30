@@ -379,12 +379,12 @@ exports.getTeachersForSubject = async (req, res, next) => {
 };
 
 
-// GET /api/teachers/subject-teachers/all — bulk map for Timetable grid (1 call, not N)
+// GET /api/teachers/subject-teachers/all
 exports.getAllSubjectTeachers = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const result = await query(
-      `SELECT st.subject_id, st.teacher_user_id, u.full_name AS teacher_name
+      `SELECT st.id AS assignment_id, st.subject_id, st.teacher_user_id, u.full_name AS teacher_name
        FROM subject_teachers st
        JOIN users u ON u.id = st.teacher_user_id
        WHERE st.school_id=@sid AND st.is_active=1 AND st.deleted_at IS NULL`,
@@ -393,6 +393,7 @@ exports.getAllSubjectTeachers = async (req, res, next) => {
     return success(res, result.recordset, 'All subject-teacher mappings fetched');
   } catch (err) { next(err); }
 };
+
 
 // GET /api/teachers/subject-teachers?subject_id=xxx
 exports.getSubjectTeachers = async (req, res, next) => {
@@ -433,16 +434,47 @@ exports.assignSubjectTeacher = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+
 // DELETE /api/teachers/subject-teachers/:id
 exports.removeSubjectTeacher = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const { id } = req.params;
-    await query(
-      `UPDATE subject_teachers SET is_active=0, deleted_at=GETUTCDATE(), updated_at=GETUTCDATE() WHERE id=@id AND school_id=@sid`,
-      { id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
-    );
-    return success(res, null, 'Teacher unassigned from subject');
+
+    await withTransaction(async (tx) => {
+      // 1. डिलीट करने से पहले असाइनमेंट से teacher_user_id और subject_id निकालें
+      const rGet = tx.request();
+      rGet.input('id', sql.UniqueIdentifier, id);
+      rGet.input('sid', sql.UniqueIdentifier, schoolId);
+      const stRes = await rGet.query(`SELECT subject_id, teacher_user_id FROM subject_teachers WHERE id=@id AND school_id=@sid`);
+
+      if (stRes.recordset.length > 0) {
+        const { subject_id, teacher_user_id } = stRes.recordset[0];
+
+        // 2. टाइमटेबल में जाकर इस सब्जेक्ट से इस टीचर को NULL कर दें (सब्जेक्ट रहेगा, टीचर हट जाएगा)
+        const rUpdateTT = tx.request();
+        rUpdateTT.input('sid', sql.UniqueIdentifier, schoolId);
+        rUpdateTT.input('subId', sql.UniqueIdentifier, subject_id);
+        rUpdateTT.input('tid', sql.UniqueIdentifier, teacher_user_id);
+        await rUpdateTT.query(`
+          UPDATE timetable_entries 
+          SET teacher_id = NULL 
+          WHERE school_id=@sid AND subject_id=@subId AND teacher_id=@tid
+        `);
+      }
+
+      // 3. सब्जेक्ट टीचर मैपिंग को इनएक्टिव (Soft Delete) करें
+      const rDel = tx.request();
+      rDel.input('id', sql.UniqueIdentifier, id);
+      rDel.input('sid', sql.UniqueIdentifier, schoolId);
+      await rDel.query(`
+        UPDATE subject_teachers 
+        SET is_active=0, deleted_at=GETUTCDATE(), updated_at=GETUTCDATE() 
+        WHERE id=@id AND school_id=@sid
+      `);
+    });
+
+    return success(res, null, 'Teacher unassigned and successfully removed from timetables');
   } catch (err) { next(err); }
 };
 
