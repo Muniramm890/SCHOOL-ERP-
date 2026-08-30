@@ -377,3 +377,88 @@ exports.getTeachersForSubject = async (req, res, next) => {
     return success(res, result.recordset, 'Suggested teachers fetched');
   } catch (err) { next(err); }
 };
+
+
+// GET /api/teachers/subject-teachers/all — bulk map for Timetable grid (1 call, not N)
+exports.getAllSubjectTeachers = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const result = await query(
+      `SELECT st.subject_id, st.teacher_user_id, u.full_name AS teacher_name
+       FROM subject_teachers st
+       JOIN users u ON u.id = st.teacher_user_id
+       WHERE st.school_id=@sid AND st.is_active=1 AND st.deleted_at IS NULL`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+    return success(res, result.recordset, 'All subject-teacher mappings fetched');
+  } catch (err) { next(err); }
+};
+
+// GET /api/teachers/subject-teachers?subject_id=xxx
+exports.getSubjectTeachers = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { subject_id } = req.query;
+    if (!subject_id) return badRequest(res, 'subject_id is required');
+    const result = await query(
+      `SELECT st.id AS assignment_id, st.teacher_user_id, u.full_name AS teacher_name
+       FROM subject_teachers st
+       JOIN users u ON u.id = st.teacher_user_id
+       WHERE st.school_id=@sid AND st.subject_id=@subId AND st.is_active=1 AND st.deleted_at IS NULL
+       ORDER BY u.full_name`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId }, subId: { type: sql.UniqueIdentifier, value: subject_id } }
+    );
+    return success(res, result.recordset, 'Subject teachers fetched');
+  } catch (err) { next(err); }
+};
+
+// POST /api/teachers/subject-teachers { subject_id, teacher_user_id }
+exports.assignSubjectTeacher = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { subject_id, teacher_user_id } = req.body;
+    if (!subject_id || !teacher_user_id) return badRequest(res, 'subject_id and teacher_user_id are required');
+
+    const dup = await queryOne(
+      `SELECT id FROM subject_teachers WHERE school_id=@sid AND subject_id=@subId AND teacher_user_id=@tid AND is_active=1 AND deleted_at IS NULL`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId }, subId: { type: sql.UniqueIdentifier, value: subject_id }, tid: { type: sql.UniqueIdentifier, value: teacher_user_id } }
+    );
+    if (dup) return badRequest(res, 'This teacher is already assigned to this subject.');
+
+    const r = await query(
+      `INSERT INTO subject_teachers (id, school_id, subject_id, teacher_user_id) OUTPUT INSERTED.id VALUES (NEWID(), @sid, @subId, @tid)`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId }, subId: { type: sql.UniqueIdentifier, value: subject_id }, tid: { type: sql.UniqueIdentifier, value: teacher_user_id } }
+    );
+    return created(res, { id: r.recordset[0].id }, 'Teacher assigned to subject');
+  } catch (err) { next(err); }
+};
+
+// DELETE /api/teachers/subject-teachers/:id
+exports.removeSubjectTeacher = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { id } = req.params;
+    await query(
+      `UPDATE subject_teachers SET is_active=0, deleted_at=GETUTCDATE(), updated_at=GETUTCDATE() WHERE id=@id AND school_id=@sid`,
+      { id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+    return success(res, null, 'Teacher unassigned from subject');
+  } catch (err) { next(err); }
+};
+
+// GET /api/teachers/:userId/assigned-subjects — used by Teacher Profile "Subjects Assigned" tab
+exports.getTeacherAssignedSubjects = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { userId } = req.params;
+    const result = await query(
+      `SELECT st.subject_id, s.name AS subject_name, s.category
+       FROM subject_teachers st
+       JOIN subjects s ON s.id = st.subject_id
+       WHERE st.school_id=@sid AND st.teacher_user_id=@uid AND st.is_active=1 AND st.deleted_at IS NULL
+       ORDER BY s.name`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId }, uid: { type: sql.UniqueIdentifier, value: userId } }
+    );
+    return success(res, result.recordset, 'Teacher assigned subjects fetched');
+  } catch (err) { next(err); }
+};
