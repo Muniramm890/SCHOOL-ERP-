@@ -10,6 +10,7 @@ const { getPool, poolPromise } = require('./config/db');
 const logger     = require('./utils/logger');
 const errorHandler = require('./middleware/errorHandler');
 const { authenticate } = require('./middleware/auth');
+const requestLogger = require('./middleware/requestLogger');
 
 const app = express();
 app.set('trust proxy', 1);
