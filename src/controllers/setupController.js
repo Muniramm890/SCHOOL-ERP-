@@ -277,7 +277,7 @@ exports.updateSchool = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// ═══════════════ 🔴 GRADE-SUBJECTS (Class-level subject mapping) ═══════════
+
 
 // ═══════════════ 🔴 GRADE-SUBJECTS (Class-level subject mapping) ═══════════
 
@@ -305,40 +305,82 @@ exports.listGradeSubjects = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// PUT /api/setup/grade-subjects
 exports.saveGradeSubjects = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const { grade_id, subject_ids } = req.body;
 
-    if (!grade_id) return notFound(res, 'grade_id is required');
-    if (!Array.isArray(subject_ids)) return notFound(res, 'subject_ids must be an array');
+    if (!grade_id) return badRequest(res, 'grade_id is required');
+    if (!Array.isArray(subject_ids)) return badRequest(res, 'subject_ids must be an array');
 
-    const grade = await queryOne(
-      `SELECT id FROM grades WHERE id=@gid AND school_id=@sid AND deleted_at IS NULL`,
+    // 1. डेटाबेस से मौजूदा (Current) सब्जेक्ट्स निकालें
+    const currentRes = await query(
+      `SELECT subject_id FROM grade_subjects WHERE grade_id=@gid AND school_id=@sid`,
       { gid: { type: sql.UniqueIdentifier, value: grade_id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
-    if (!grade) return notFound(res, 'Grade/Class not found for this school');
+    const currentSubjects = currentRes.recordset.map(r => r.subject_id.toUpperCase());
+    const newSubjects = subject_ids.map(id => id.toUpperCase());
+
+    // 2. पता लगाएँ कि कौन से सब्जेक्ट्स हटे हैं और कौन से नए जुड़े हैं
+    const removedSubjects = currentSubjects.filter(id => !newSubjects.includes(id));
+    const addedSubjects = newSubjects.filter(id => !currentSubjects.includes(id));
 
     await withTransaction(async (tx) => {
-      const rDel = tx.request();
-      rDel.input('sid', sql.UniqueIdentifier, schoolId);
-      rDel.input('gid', sql.UniqueIdentifier, grade_id);
-      await rDel.query(`DELETE FROM grade_subjects WHERE school_id=@sid AND grade_id=@gid`);
+      // 3. जो सब्जेक्ट्स हटाए गए हैं, उनका कैस्केड (Cascade) क्लीनअप करें
+      for (const subId of removedSubjects) {
+        
+        // A. इस क्लास के सभी सेक्शन्स से टीचर असाइनमेंट हटाएँ
+        const r1 = tx.request();
+        r1.input('sid', sql.UniqueIdentifier, schoolId);
+        r1.input('gid', sql.UniqueIdentifier, grade_id);
+        r1.input('subid', sql.UniqueIdentifier, subId);
+        await r1.query(`
+          UPDATE teacher_subjects 
+          SET is_active=0, deleted_at=GETUTCDATE()
+          WHERE school_id=@sid AND subject_id=@subid 
+            AND section_id IN (SELECT id FROM sections WHERE grade_id=@gid AND school_id=@sid)
+        `);
 
-      for (const subId of subject_ids) {
-        const r = tx.request();
-        r.input('sid', sql.UniqueIdentifier, schoolId);
-        r.input('gid', sql.UniqueIdentifier, grade_id);
-        r.input('subid', sql.UniqueIdentifier, subId);
-        await r.query(`INSERT INTO grade_subjects (id, school_id, grade_id, subject_id) VALUES (NEWID(), @sid, @gid, @subid)`);
+        // B. इस क्लास के टाइमटेबल से इस सब्जेक्ट के डिब्बे खाली (Delete) करें
+        const r2 = tx.request();
+        r2.input('sid', sql.UniqueIdentifier, schoolId);
+        r2.input('gid', sql.UniqueIdentifier, grade_id);
+        r2.input('subid', sql.UniqueIdentifier, subId);
+        await r2.query(`
+          DELETE FROM timetable_entries
+          WHERE school_id=@sid AND subject_id=@subid 
+            AND section_id IN (SELECT id FROM sections WHERE grade_id=@gid AND school_id=@sid)
+        `);
+
+        // C. अंत में जंक्शन टेबल से सब्जेक्ट हटाएँ
+        const r3 = tx.request();
+        r3.input('sid', sql.UniqueIdentifier, schoolId);
+        r3.input('gid', sql.UniqueIdentifier, grade_id);
+        r3.input('subid', sql.UniqueIdentifier, subId);
+        await r3.query(`
+          DELETE FROM grade_subjects 
+          WHERE school_id=@sid AND grade_id=@gid AND subject_id=@subid
+        `);
+      }
+
+      // 4. जो नए सब्जेक्ट्स टिक किए गए हैं, उन्हें जोड़ें
+      for (const subId of addedSubjects) {
+        const r4 = tx.request();
+        r4.input('sid', sql.UniqueIdentifier, schoolId);
+        r4.input('gid', sql.UniqueIdentifier, grade_id);
+        r4.input('subid', sql.UniqueIdentifier, subId);
+        await r4.query(`
+          INSERT INTO grade_subjects (school_id, grade_id, subject_id) 
+          VALUES (@sid, @gid, @subid)
+        `);
       }
     });
 
-    return success(res, null, 'Subjects synced for this class successfully');
+    return success(res, null, 'Subjects and dependencies synced successfully');
   } catch (err) { next(err); }
 };
 
-// 🔥 NEW: Premium Bulk Matrix Setup API
 // 🔥 NEW: Premium Bulk Matrix Setup API
 exports.bulkAcademicSetup = async (req, res, next) => {
   const { classes } = req.body; // Array of { name, numeric, stream, sections: [], subjects: [] }
