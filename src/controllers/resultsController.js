@@ -1,6 +1,6 @@
 
 const sql = require('mssql');
-const { query, queryOne, withTransaction } = require('../utils/db');
+const { query, queryOne, withTransaction, sql } = require('../config/db');
 const { success, created, notFound, badRequest } = require('../utils/response');
 
 // ═══════════════════════════════════════════════════════════════
