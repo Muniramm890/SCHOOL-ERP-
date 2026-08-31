@@ -447,7 +447,6 @@ exports.getStaffHistory = async (req, res, next) => {
         to: { type: sql.Date, value: rangeTo },
       }
     );
-
     const counts = { P: 0, A: 0, L: 0, OD: 0 };
     rows.recordset.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
     const totalMarked = rows.recordset.length;
