@@ -1,64 +1,58 @@
 // src/middleware/requestLogger.js
-const logger = require('../config/logger');
+const logger = require('../utils/logger');
+const { logAudit } = require('../utils/auditLogger');
 
-// Sensitive fields jo kabhi bhi log nahi hone chahiye
 const SENSITIVE_FIELDS = ['password', 'token', 'otp', 'confirmPassword', 'secret', 'authorization'];
 
-// Body ko safe banane ke liye — sensitive keys ko mask karta hai
 const sanitizeBody = (body) => {
   if (!body || typeof body !== 'object') return body;
   const clone = { ...body };
   for (const key of Object.keys(clone)) {
-    if (SENSITIVE_FIELDS.includes(key.toLowerCase())) {
-      clone[key] = '***HIDDEN***';
-    }
+    if (SENSITIVE_FIELDS.includes(key.toLowerCase())) clone[key] = '***HIDDEN***';
   }
   return clone;
 };
 
-// Response body ko capture karne ke liye res.json override
+const getIp = (req) => {
+  const fwd = req.headers['x-forwarded-for'];
+  return fwd ? fwd.split(',')[0].trim() : req.socket.remoteAddress;
+};
+
 const requestLogger = (req, res, next) => {
   const start = process.hrtime.bigint();
   const requestId = req.headers['x-request-id'] || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   req.requestId = requestId;
+  const ip = getIp(req);
 
-  // Incoming request log (dev mein detailed, prod mein halka)
   logger.info(`→ ${req.method} ${req.originalUrl}`, {
-    requestId,
-    ip: req.ip || req.connection?.remoteAddress,
-    userAgent: req.headers['user-agent'],
-    query: req.query,
-    body: process.env.NODE_ENV === 'development' ? sanitizeBody(req.body) : undefined,
-    user: req.user?.userId || 'anonymous',
-    school: req.user?.schoolId || null,
+    requestId, ip, user: req.user?.userId || 'anonymous',
   });
 
-  // Response finish hone par log karo
   res.on('finish', () => {
-    const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
+    const durationMs = Math.round(Number(process.hrtime.bigint() - start) / 1e6);
     const level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
 
-    logger[level](`← ${req.method} ${req.originalUrl} ${res.statusCode} - ${durationMs.toFixed(1)}ms`, {
-      requestId,
-      statusCode: res.statusCode,
-      durationMs: Math.round(durationMs),
-      user: req.user?.userId || 'anonymous',
-      school: req.user?.schoolId || null,
-      contentLength: res.getHeader('content-length') || 0,
+    logger[level](`← ${req.method} ${req.originalUrl} ${res.statusCode} - ${durationMs}ms`, {
+      requestId, statusCode: res.statusCode, durationMs, user: req.user?.userId || 'anonymous',
     });
 
-    // Slow request warning (500ms se zyada)
-    if (durationMs > 500) {
-      logger.warn(`⚠ Slow request detected: ${req.method} ${req.originalUrl} took ${durationMs.toFixed(0)}ms`, {
-        requestId,
+    // 🔴 DB mein bhi likh do — sirf GET requests ko skip mat karo,
+    // sab actions track honge (jaisa tumne bola: "kaunsa page visit kiya")
+    // Health-check aur static-ish routes ko chhod do taaki table bloat na ho
+    if (!req.originalUrl.startsWith('/health')) {
+      logAudit({
+        schoolId: req.user?.schoolId || null,
+        userId: req.user?.userId || null,
+        userName: req.user?.fullName || null,
+        userRole: req.user?.role || null,
+        actionType: 'API_CALL',
+        method: req.method,
+        endpoint: req.originalUrl,
+        statusCode: res.statusCode,
+        ipAddress: ip,
+        userAgent: req.headers['user-agent'],
+        durationMs,
       });
-    }
-  });
-
-  // Client connection abruptly close ho jaye to bhi track ho
-  res.on('close', () => {
-    if (!res.writableEnded) {
-      logger.warn(`✕ Request aborted by client: ${req.method} ${req.originalUrl}`, { requestId });
     }
   });
 
