@@ -52,12 +52,15 @@ exports.getSectionRoster = async (req, res, next) => {
 };
 
 // POST /api/attendance/students/mark
-// Body: { section_id, date, entries: [{ student_id, status, remarks }] }
+// POST /api/attendance/students/mark
+// Body: { section_id, section_name, date, entries: [{ student_id, status, remarks }] }
 exports.markStudentAttendance = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const markedBy = req.user.userId || req.user.id || null;
-    const { section_id, date, entries } = req.body;
+    
+    // NEW: Added section_name from frontend request body
+    const { section_id, section_name, date, entries } = req.body;
 
     if (!section_id || !date || !Array.isArray(entries) || entries.length === 0) {
       return badRequest(res, 'section_id, date and a non-empty entries[] are required');
@@ -102,8 +105,8 @@ exports.markStudentAttendance = async (req, res, next) => {
       }
     });
 
-   // 🔴 Audit log — student attendance marked
-   await logAudit({
+    // 🔴 Audit log — student attendance marked
+    await logAudit({
       schoolId,
       userId: markedBy,
       userName: req.user.fullName || null,
@@ -112,11 +115,17 @@ exports.markStudentAttendance = async (req, res, next) => {
       details: { 
         type: 'student', 
         section_id, 
-        section_name: section_name || 'Unknown Class', // NEW FIELD
+        section_name: section_name || 'Unknown Class', // UI ke liye human-readable naam
         date, 
         count: entries.length 
       },
     });
+
+    return success(res, null, 'Attendance saved successfully');
+  } catch (err) { 
+    next(err); 
+  }
+};
 
 // GET /api/attendance/students/analysis?section_id=&from=&to=
 // Per-student stats + daily % trend for one section (Class Analysis tab)
