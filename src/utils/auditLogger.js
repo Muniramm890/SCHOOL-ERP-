@@ -1,6 +1,6 @@
 // src/utils/auditLogger.js
 const sql = require('mssql');
-const { query } = require('./db');   // ya jahan bhi tumhara query() function hai
+const { query } = require('../config/db');
 const logger = require('./logger');
 
 /**
