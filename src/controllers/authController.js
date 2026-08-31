@@ -70,7 +70,7 @@ exports.login = async (req, res, next) => {
       userId: { type: sql.UniqueIdentifier, value: user.id } 
     });
 
-    const payload = { userId: user.id, schoolId: memberData.school_id, role: memberData.role };
+    const payload = { userId: user.id, schoolId: memberData.school_id, role: memberData.role, fullName: user.full_name };
     const token = signToken(payload);
     const refreshToken = signRefresh(payload);
 
@@ -166,8 +166,8 @@ exports.refresh = async (req, res, next) => {
     const { refreshToken } = req.body;
     if (!refreshToken) return badRequest(res, 'Refresh token required');
 
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const token = signToken({ userId: decoded.userId, schoolId: decoded.schoolId, role: decoded.role });
+    const decoded = jwt.verify(refreshToken, secret);
+    const token = signToken({ userId: decoded.userId, schoolId: decoded.schoolId, role: decoded.role, fullName: decoded.fullName });
     
     return success(res, { token });
   } catch (err) {
@@ -177,7 +177,7 @@ exports.refresh = async (req, res, next) => {
 };
 
 exports.logout = async (req, res) => {
-  logAudit({
+   await logAudit({
     schoolId: req.user?.schoolId,
     userId: req.user?.userId,
     userName: req.user?.fullName,
