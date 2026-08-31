@@ -175,3 +175,15 @@ exports.refresh = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.logout = async (req, res) => {
+  logAudit({
+    schoolId: req.user?.schoolId,
+    userId: req.user?.userId,
+    userName: req.user?.fullName,
+    userRole: req.user?.role,
+    actionType: 'LOGOUT',
+    ipAddress: req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress,
+  });
+  return success(res, null, 'Logged out');
+};
