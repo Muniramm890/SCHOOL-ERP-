@@ -12,6 +12,7 @@ const errorHandler = require('./middleware/errorHandler');
 const { authenticate } = require('./middleware/auth');
 const requestLogger = require('./middleware/requestLogger');
 
+
 const app = express();
 app.set('trust proxy', 1);
 
@@ -52,6 +53,9 @@ if (process.env.NODE_ENV !== 'test') {
     stream: { write: (msg) => logger.info(msg.trim()) },
   }));
 }
+
+//____________________________audit log api_______________
+app.use(`${API}/audit`, require('./routes/audit'));
 
 // ── Rate limiting ──────────────────────────────────────────────────────
 app.use('/api/auth/login', rateLimit({
