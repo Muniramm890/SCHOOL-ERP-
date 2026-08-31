@@ -2,7 +2,7 @@
 // src/controllers/attendanceController.js
 const { query, queryOne, withTransaction, sql } = require('../config/db');
 const { success, badRequest, notFound } = require('../utils/response');
-const { audit } = require('../utils/audit');
+const { logAudit } = require('../utils/auditLogger');
 const { v4: uuidv4 } = require('uuid');
 
 const VALID_STATUSES = ['P', 'A', 'L', 'OD'];
@@ -102,13 +102,15 @@ exports.markStudentAttendance = async (req, res, next) => {
       }
     });
 
-    // 🔴 Audit log — student attendance marked
-    await audit(req, 'ATTENDANCE_MARKED', {
-      type: 'student',
-      section_id,
-      date,
-      count: entries.length,
-    });
+   // 🔴 Audit log — student attendance marked
+   await logAudit({
+     schoolId,
+     userId: markedBy,
+     userName: req.user.fullName || null,
+     userRole: req.user.role || null,
+     actionType: 'ATTENDANCE_MARKED',
+     details: { type: 'student', section_id, date, count: entries.length },
+   });
 
     return success(res, null, 'Attendance saved successfully');
   } catch (err) { next(err); }
@@ -346,11 +348,15 @@ exports.markStaffAttendance = async (req, res, next) => {
         }
       }
     });
-     // 🔴 Audit log — staff attendance marked
-    await audit(req, 'STAFF_ATTENDANCE_MARKED', {
-      date,
-      count: entries.length,
-    });
+    // 🔴 Audit log — staff attendance marked
+   await logAudit({
+     schoolId,
+     userId: markedBy,
+     userName: req.user.fullName || null,
+     userRole: req.user.role || null,
+     actionType: 'STAFF_ATTENDANCE_MARKED',
+     details: { date, count: entries.length },
+   });
 
     return success(res, null, 'Staff attendance saved successfully');
   } catch (err) { next(err); }
