@@ -17,6 +17,9 @@ const otpLimiter = rateLimit({
 router.post('/login',           ctrl.login);
 router.post('/refresh',         ctrl.refresh);
 
+//==========================================
+router.post('/logout', authenticate, ctrl.logout);
+
 // ── Public Routes (School Registration / Signup) ───────────────────────
 // 🔴 ये 3 नए राउट्स आपके 3-स्टेप फॉर्म के लिए हैं
 router.post('/signup/send-otp',   otpLimiter, signupCtrl.sendOtp);
