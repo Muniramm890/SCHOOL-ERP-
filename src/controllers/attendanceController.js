@@ -104,17 +104,19 @@ exports.markStudentAttendance = async (req, res, next) => {
 
    // 🔴 Audit log — student attendance marked
    await logAudit({
-     schoolId,
-     userId: markedBy,
-     userName: req.user.fullName || null,
-     userRole: req.user.role || null,
-     actionType: 'ATTENDANCE_MARKED',
-     details: { type: 'student', section_id, date, count: entries.length },
-   });
-
-    return success(res, null, 'Attendance saved successfully');
-  } catch (err) { next(err); }
-};
+      schoolId,
+      userId: markedBy,
+      userName: req.user.fullName || null,
+      userRole: req.user.role || null,
+      actionType: 'ATTENDANCE_MARKED',
+      details: { 
+        type: 'student', 
+        section_id, 
+        section_name: section_name || 'Unknown Class', // NEW FIELD
+        date, 
+        count: entries.length 
+      },
+    });
 
 // GET /api/attendance/students/analysis?section_id=&from=&to=
 // Per-student stats + daily % trend for one section (Class Analysis tab)
