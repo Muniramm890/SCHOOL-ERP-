@@ -1,7 +1,8 @@
 // src/controllers/auditController.js
 const sql = require('mssql');
-const { query } = require('../utils/db');
 const { success, badRequest } = require('../utils/response');
+const { query } = require('../config/db');
+
 
 exports.getAuditLogs = async (req, res, next) => {
   try {
@@ -29,5 +30,23 @@ exports.getAuditLogs = async (req, res, next) => {
       }
     );
     return success(res, result.recordset, 'Audit logs fetched');
+  } catch (err) { next(err); }
+};
+
+
+
+// GET /api/audit/recent-activity
+exports.getRecentActivity = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const result = await query(
+      `SELECT TOP 8 action_type, user_name, details, created_at
+       FROM audit_logs
+       WHERE school_id=@sid
+         AND action_type IN ('ATTENDANCE_MARKED','FEE_PAID','NOTICE_CREATED','TEST_CREATED','STUDENT_ADDED','HOMEWORK_ASSIGNED','EXAM_CREATED')
+       ORDER BY created_at DESC`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+    return success(res, result.recordset, 'Recent activity fetched');
   } catch (err) { next(err); }
 };
