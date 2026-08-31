@@ -102,6 +102,14 @@ exports.markStudentAttendance = async (req, res, next) => {
       }
     });
 
+    // 🔴 Audit log — student attendance marked
+    await audit(req, 'ATTENDANCE_MARKED', {
+      type: 'student',
+      section_id,
+      date,
+      count: entries.length,
+    });
+
     return success(res, null, 'Attendance saved successfully');
   } catch (err) { next(err); }
 };
@@ -337,6 +345,11 @@ exports.markStaffAttendance = async (req, res, next) => {
           );
         }
       }
+    });
+     // 🔴 Audit log — staff attendance marked
+    await audit(req, 'STAFF_ATTENDANCE_MARKED', {
+      date,
+      count: entries.length,
     });
 
     return success(res, null, 'Staff attendance saved successfully');
