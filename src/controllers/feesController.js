@@ -1,10 +1,28 @@
 // src/controllers/feesController.js
 const { query, queryOne, withTransaction, sql } = require('../config/db');
 const { success, created, notFound, badRequest, paginated } = require('../utils/response');
-const { audit } = require('../utils/audit');
 const { v4: uuidv4 } = require('uuid');
 
-// ── GET /api/fees/overview ────────────────────────────────────────────────
+// ── AUDIT LOGGER HELPER ───────────────────────────────────────────────────
+const logAudit = async (tx, { schoolId, userId, userName, actionType, details }) => {
+  try {
+    const req = tx.request();
+    req.input('lid', sql.UniqueIdentifier, uuidv4());
+    req.input('sid', sql.UniqueIdentifier, schoolId);
+    req.input('uid', sql.UniqueIdentifier, userId);
+    req.input('unm', sql.NVarChar(200), userName || 'Accountant');
+    req.input('act', sql.NVarChar(50), actionType);
+    req.input('det', sql.NVarChar(sql.MAX), JSON.stringify(details));
+    await req.query(`
+      INSERT INTO audit_logs (id, school_id, user_id, user_name, action_type, details, created_at)
+      VALUES (@lid, @sid, @uid, @unm, @act, @det, GETUTCDATE())
+    `);
+  } catch (e) {
+    console.warn('Audit Logging Warning:', e.message);
+  }
+};
+
+// ── 1. GET /api/fees/overview ─────────────────────────────────────────────
 exports.getOverview = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -13,253 +31,391 @@ exports.getOverview = async (req, res, next) => {
     const [summary, byClass, monthly] = await Promise.all([
       queryOne(
         `SELECT
-           SUM(paid_paise)                              AS total_paid_paise,
-           SUM(pending_paise)                           AS total_pending_paise,
-           SUM(total_fee_paise)                         AS total_fee_paise,
-           COUNT(CASE WHEN status='paid'    THEN 1 END) AS paid_count,
-           COUNT(CASE WHEN status='pending' THEN 1 END) AS pending_count,
-           COUNT(CASE WHEN status='partial' THEN 1 END) AS partial_count
+           ISNULL(SUM(paid_paise), 0)                                AS total_paid_paise,
+           ISNULL(SUM(pending_paise), 0)                             AS total_pending_paise,
+           ISNULL(SUM(total_fee_paise), 0)                           AS total_fee_paise,
+           COUNT(CASE WHEN status='paid'    THEN 1 END)              AS paid_count,
+           COUNT(CASE WHEN status='pending' THEN 1 END)              AS pending_count,
+           COUNT(CASE WHEN status='partial' THEN 1 END)              AS partial_count,
+           COUNT(DISTINCT student_id)                                AS total_students
          FROM student_fee_accounts WHERE school_id=@sid AND deleted_at IS NULL`,
         { sid }
       ),
       query(
-        `SELECT g.name AS class_name, g.numeric_order,
-                SUM(sfa.paid_paise)    AS paid_paise,
-                SUM(sfa.pending_paise) AS pending_paise,
-                COUNT(*)               AS student_count
-         FROM student_fee_accounts sfa
-         JOIN enrolments e  ON e.student_id = sfa.student_id AND e.school_id = @sid AND e.is_active = 1
-         JOIN sections sc   ON sc.id = e.section_id
-         JOIN grades g      ON g.id = sc.grade_id AND g.school_id = @sid
-         WHERE sfa.school_id = @sid AND sfa.deleted_at IS NULL
-         GROUP BY g.name, g.numeric_order ORDER BY g.numeric_order`,
+        `SELECT g.name AS class_name, ISNULL(g.numeric_order, 99) AS numeric_order,
+                ISNULL(SUM(sfa.paid_paise), 0)    AS paid_paise,
+                ISNULL(SUM(sfa.pending_paise), 0) AS pending_paise,
+                COUNT(sfa.student_id)             AS student_count
+         FROM grades g
+         JOIN sections sc   ON sc.grade_id = g.id AND sc.school_id = @sid AND sc.deleted_at IS NULL
+         JOIN enrolments e  ON e.section_id = sc.id AND e.school_id = @sid AND e.is_active = 1 AND e.deleted_at IS NULL
+         LEFT JOIN student_fee_accounts sfa ON sfa.student_id = e.student_id AND sfa.school_id = @sid AND sfa.deleted_at IS NULL
+         WHERE g.school_id = @sid AND g.deleted_at IS NULL
+         GROUP BY g.name, g.numeric_order
+         ORDER BY numeric_order`,
         { sid }
       ),
       query(
         `SELECT YEAR(payment_date) AS yr, MONTH(payment_date) AS mo,
-                SUM(amount_paise) AS collected_paise, COUNT(*) AS txn_count
+                ISNULL(SUM(amount_paise), 0) AS collected_paise, COUNT(*) AS txn_count
          FROM fee_payments
          WHERE school_id = @sid AND is_void = 0 AND deleted_at IS NULL
-           AND payment_date >= DATEADD(MONTH,-6,GETUTCDATE())
+           AND payment_date >= DATEADD(MONTH, -6, GETUTCDATE())
          GROUP BY YEAR(payment_date), MONTH(payment_date)
          ORDER BY yr, mo`,
         { sid }
       ),
     ]);
 
-    return success(res, { summary, byClass: byClass.recordset, monthly: monthly.recordset });
+    return success(res, {
+      summary: summary || { total_paid_paise: 0, total_pending_paise: 0, total_fee_paise: 0 },
+      byClass: byClass?.recordset || [],
+      monthly: monthly?.recordset || []
+    }, 'Fee overview calculated');
   } catch (err) { next(err); }
 };
 
-// ── GET /api/fees/accounts ────────────────────────────────────────────────
-// All student fee accounts with filters
+// ── 2. GET /api/fees/accounts ─────────────────────────────────────────────
 exports.listAccounts = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
-    const { page = 1, limit = 25, grade_id, status, search } = req.query;
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 25;
     const offset = (page - 1) * limit;
+    const { grade_id, status, search } = req.query;
 
-    let where = `sfa.school_id = @sid AND sfa.deleted_at IS NULL`;
+    let where = `s.school_id = @sid AND s.deleted_at IS NULL`;
     const params = { sid: { type: sql.UniqueIdentifier, value: schoolId } };
 
-    if (status)   { where += ` AND sfa.status = @status`;   params.status = { type: sql.VarChar(50), value: status }; }
-    if (grade_id) { where += ` AND g.id = @gradeId`;        params.gradeId = { type: sql.UniqueIdentifier, value: grade_id }; }
-    if (search)   { where += ` AND (s.first_name + ' ' + s.last_name LIKE @search OR s.admission_no LIKE @search)`;
-                    params.search = { type: sql.NVarChar(255), value: `%${search}%` }; }
+    if (status) {
+      where += ` AND ISNULL(sfa.status, 'pending') = @status`;
+      params.status = { type: sql.VarChar(50), value: status.toLowerCase() };
+    }
+    if (grade_id) {
+      where += ` AND g.id = @gradeId`;
+      params.gradeId = { type: sql.UniqueIdentifier, value: grade_id };
+    }
+    if (search) {
+      where += ` AND (s.first_name + ' ' + ISNULL(s.last_name, '') LIKE @search OR s.admission_no LIKE @search)`;
+      params.search = { type: sql.NVarChar(255), value: `%${search.trim()}%` };
+    }
 
     const count = await queryOne(
-      `SELECT COUNT(*) AS total FROM student_fee_accounts sfa
-       JOIN students s ON s.id = sfa.student_id
-       LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active=1
-       LEFT JOIN sections sc  ON sc.id = e.section_id
-       LEFT JOIN grades g     ON g.id = sc.grade_id
-       WHERE ${where}`, params);
-
-    const accounts = await query(
-      `SELECT sfa.id, sfa.student_id, sfa.total_fee_paise, sfa.discount_paise,
-              sfa.scholarship_paise, sfa.net_fee_paise, sfa.paid_paise,
-              sfa.waived_paise, sfa.pending_paise, sfa.status, sfa.last_payment_date,
-              s.first_name + ' ' + s.last_name AS student_name,
-              s.admission_no, s.photo_url,
-              g.name AS class_name, g.id AS grade_id,
-              sc.name AS section_name, e.roll_no
-       FROM student_fee_accounts sfa
-       JOIN students s ON s.id = sfa.student_id
-       LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active=1
-       LEFT JOIN sections sc  ON sc.id = e.section_id
-       LEFT JOIN grades g     ON g.id = sc.grade_id
-       WHERE ${where}
-       ORDER BY sfa.pending_paise DESC, s.first_name
-       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
-      { ...params, offset: { type: sql.Int, value: +offset }, limit: { type: sql.Int, value: +limit } }
+      `SELECT COUNT(DISTINCT s.id) AS total
+       FROM students s
+       LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active = 1 AND e.deleted_at IS NULL
+       LEFT JOIN sections sc  ON sc.id = e.section_id AND sc.school_id = @sid
+       LEFT JOIN grades g     ON g.id = sc.grade_id AND g.school_id = @sid
+       LEFT JOIN student_fee_accounts sfa ON sfa.student_id = s.id AND sfa.school_id = @sid AND sfa.deleted_at IS NULL
+       WHERE ${where}`, params
     );
 
-    return paginated(res, accounts.recordset, count.total, page, limit);
+    const accounts = await query(
+      `SELECT s.id AS student_id,
+              s.first_name + ' ' + ISNULL(s.last_name, '') AS student_name,
+              s.admission_no, s.photo_url,
+              g.name AS class_name, g.id AS grade_id,
+              sc.name AS section_name, e.roll_no,
+              ISNULL(sfa.id, NEWID()) AS fee_account_id,
+              ISNULL(sfa.total_fee_paise, 0) AS total_fee_paise,
+              ISNULL(sfa.paid_paise, 0)      AS paid_paise,
+              ISNULL(sfa.pending_paise, 0)   AS pending_paise,
+              ISNULL(sfa.status, 'pending')  AS status
+       FROM students s
+       LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active = 1 AND e.deleted_at IS NULL
+       LEFT JOIN sections sc  ON sc.id = e.section_id AND sc.school_id = @sid
+       LEFT JOIN grades g     ON g.id = sc.grade_id AND g.school_id = @sid
+       LEFT JOIN student_fee_accounts sfa ON sfa.student_id = s.id AND sfa.school_id = @sid AND sfa.deleted_at IS NULL
+       WHERE ${where}
+       ORDER BY ISNULL(sfa.pending_paise, 0) DESC, s.first_name ASC
+       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+      { ...params, offset: { type: sql.Int, value: offset }, limit: { type: sql.Int, value: limit } }
+    );
+
+    return paginated(res, accounts.recordset, count?.total || 0, page, limit);
   } catch (err) { next(err); }
 };
 
-// ── GET /api/fees/accounts/:studentId ─────────────────────────────────────
+// ── 3. GET /api/fees/accounts/:studentId ──────────────────────────────────
 exports.getStudentAccount = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const { studentId } = req.params;
 
-    const account = await queryOne(
-      `SELECT sfa.*, s.first_name + ' ' + s.last_name AS student_name, s.admission_no
-       FROM student_fee_accounts sfa
-       JOIN students s ON s.id = sfa.student_id
-       WHERE sfa.student_id = @studentId AND sfa.school_id = @sid AND sfa.deleted_at IS NULL`,
-      { studentId: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    const student = await queryOne(
+      `SELECT s.id, s.first_name + ' ' + ISNULL(s.last_name, '') AS student_name,
+              s.admission_no, s.photo_url, g.name AS class_name, sc.name AS section_name,
+              sfa.id AS fee_account_id,
+              ISNULL(sfa.total_fee_paise, 0) AS total_fee_paise,
+              ISNULL(sfa.paid_paise, 0) AS paid_paise,
+              ISNULL(sfa.pending_paise, 0) AS pending_paise,
+              ISNULL(sfa.status, 'pending') AS status
+       FROM students s
+       LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active = 1
+       LEFT JOIN sections sc  ON sc.id = e.section_id
+       LEFT JOIN grades g     ON g.id = sc.grade_id
+       LEFT JOIN student_fee_accounts sfa ON sfa.student_id = s.id AND sfa.school_id = @sid
+       WHERE s.id = @uid AND s.school_id = @sid AND s.deleted_at IS NULL`,
+      { uid: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
-    if (!account) return notFound(res, 'Fee account not found');
+    if (!student) return notFound(res, 'Student not found');
 
-    const invoices = await query(
-      `SELECT fi.*, u.full_name AS created_by_name FROM fee_invoices fi
-       LEFT JOIN users u ON u.id = fi.created_by
-       WHERE fi.student_id = @studentId AND fi.school_id = @sid AND fi.deleted_at IS NULL
-       ORDER BY fi.invoice_date DESC`,
-      { studentId: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
-    );
+    const [invoices, payments] = await Promise.all([
+      query(
+        `SELECT fi.* FROM fee_invoices fi
+         WHERE fi.student_id = @uid AND fi.school_id = @sid AND fi.deleted_at IS NULL
+         ORDER BY fi.due_date DESC`,
+        { uid: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+      ),
+      query(
+        `SELECT fp.*, u.full_name AS collected_by_name FROM fee_payments fp
+         LEFT JOIN users u ON u.id = fp.collected_by
+         WHERE fp.student_id = @uid AND fp.school_id = @sid AND fp.deleted_at IS NULL
+         ORDER BY fp.payment_date DESC`,
+        { uid: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+      )
+    ]);
 
-    const payments = await query(
-      `SELECT fp.*, u.full_name AS collected_by_name FROM fee_payments fp
-       JOIN users u ON u.id = fp.collected_by
-       WHERE fp.student_id = @studentId AND fp.school_id = @sid AND fp.deleted_at IS NULL
-       ORDER BY fp.payment_date DESC`,
-      { studentId: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
-    );
-
-    return success(res, { account, invoices: invoices.recordset, payments: payments.recordset });
+    return success(res, {
+      account: student,
+      invoices: invoices?.recordset || [],
+      payments: payments?.recordset || []
+    }, 'Student financial records fetched');
   } catch (err) { next(err); }
 };
 
-// ── POST /api/fees/payments ───────────────────────────────────────────────
-// Record a fee payment
+// ── 4. POST /api/fees/payments ────────────────────────────────────────────
 exports.recordPayment = async (req, res, next) => {
   try {
-    const { schoolId, userId } = req.user;
+    const { schoolId, id: userId, name: userName } = req.user;
     const {
-      invoice_id, fee_account_id, student_id,
-      amount_paise, payment_method, transaction_ref,
-      bank_name, payment_date, remarks,
+      student_id, amount_paise, payment_method,
+      transaction_ref, bank_name, payment_date, remarks,
+      invoice_id
     } = req.body;
 
-    if (!invoice_id || !fee_account_id || !student_id || !amount_paise)
-      return badRequest(res, 'invoice_id, fee_account_id, student_id, amount_paise required');
+    if (!student_id || !amount_paise || amount_paise <= 0) {
+      return badRequest(res, 'Valid student_id and positive amount_paise are required');
+    }
 
     const paymentId = uuidv4();
+    let generatedReceipt = '';
+    let studentName = '';
 
     await withTransaction(async (tx) => {
-      // Generate receipt number
+      // 1. Fetch Student Details
+      const sReq = tx.request();
+      sReq.input('sid', sql.UniqueIdentifier, schoolId);
+      sReq.input('uid', sql.UniqueIdentifier, student_id);
+      const sRes = await sReq.query(`
+        SELECT s.first_name + ' ' + ISNULL(s.last_name, '') AS student_name, sfa.id AS account_id,
+               ISNULL(sfa.pending_paise, 0) AS pending_paise,
+               ISNULL(sfa.paid_paise, 0) AS paid_paise
+        FROM students s
+        LEFT JOIN student_fee_accounts sfa ON sfa.student_id = s.id AND sfa.school_id = @sid
+        WHERE s.id = @uid AND s.school_id = @sid
+      `);
+      if (!sRes.recordset.length) throw new Error('Student record not found');
+      
+      studentName = sRes.recordset[0].student_name;
+      let accountId = sRes.recordset[0].account_id;
+
+      // Ensure Fee Account exists
+      if (!accountId) {
+        accountId = uuidv4();
+        const crAcc = tx.request();
+        crAcc.input('aid', sql.UniqueIdentifier, accountId);
+        crAcc.input('sid', sql.UniqueIdentifier, schoolId);
+        crAcc.input('uid', sql.UniqueIdentifier, student_id);
+        await crAcc.query(`
+          INSERT INTO student_fee_accounts (id, school_id, student_id, total_fee_paise, paid_paise, pending_paise, status)
+          VALUES (@aid, @sid, @uid, 0, 0, 0, 'pending')
+        `);
+      }
+
+      // 2. Atomic Receipt Generation
       const rcptReq = tx.request();
       rcptReq.input('sid', sql.UniqueIdentifier, schoolId);
-      const rcptResult = await rcptReq.query(
-        `SELECT 'RCP-' + FORMAT(GETUTCDATE(),'yyyyMM') + '-' + RIGHT('0000' + CAST(COUNT(*)+1 AS VARCHAR),4) AS receipt_no
-         FROM fee_payments WHERE school_id=@sid AND FORMAT(created_at,'yyyyMM') = FORMAT(GETUTCDATE(),'yyyyMM')`
-      );
-      const receipt_no = rcptResult.recordset[0].receipt_no;
+      const rcptRes = await rcptReq.query(`
+        SELECT 'RCP-' + FORMAT(GETUTCDATE(), 'yyyyMM') + '-' + RIGHT('0000' + CAST(COUNT(*)+1 AS VARCHAR), 4) AS receipt_no
+        FROM fee_payments WHERE school_id = @sid AND FORMAT(created_at, 'yyyyMM') = FORMAT(GETUTCDATE(), 'yyyyMM')
+      `);
+      generatedReceipt = rcptRes.recordset[0].receipt_no;
 
-      // Insert payment
-      const p = tx.request();
-      p.input('id',         sql.UniqueIdentifier, paymentId);
-      p.input('sid',        sql.UniqueIdentifier, schoolId);
-      p.input('invoiceId',  sql.UniqueIdentifier, invoice_id);
-      p.input('feeAccId',   sql.UniqueIdentifier, fee_account_id);
-      p.input('studentId',  sql.UniqueIdentifier, student_id);
-      p.input('receiptNo',  sql.NVarChar(100),    receipt_no);
-      p.input('payDate',    sql.Date,             payment_date || new Date());
-      p.input('amount',     sql.BigInt,           amount_paise);
-      p.input('method',     sql.VarChar(50),      payment_method);
-      p.input('txRef',      sql.NVarChar(255),    transaction_ref || null);
-      p.input('bank',       sql.NVarChar(255),    bank_name || null);
-      p.input('collectedBy',sql.UniqueIdentifier, userId);
-      p.input('remarks',    sql.NVarChar(sql.MAX), remarks || null);
-      await p.query(
-        `INSERT INTO fee_payments (id,school_id,invoice_id,fee_account_id,student_id,
-           receipt_no,payment_date,amount_paise,payment_method,transaction_ref,
-           bank_name,collected_by,remarks)
-         VALUES(@id,@sid,@invoiceId,@feeAccId,@studentId,@receiptNo,@payDate,
-           @amount,@method,@txRef,@bank,@collectedBy,@remarks)`
-      );
+      // 3. Insert Payment
+      const pReq = tx.request();
+      pReq.input('id', sql.UniqueIdentifier, paymentId);
+      pReq.input('sid', sql.UniqueIdentifier, schoolId);
+      pReq.input('invId', sql.UniqueIdentifier, invoice_id || null);
+      pReq.input('aid', sql.UniqueIdentifier, accountId);
+      pReq.input('uid', sql.UniqueIdentifier, student_id);
+      pReq.input('rcpt', sql.NVarChar(100), generatedReceipt);
+      pReq.input('dt', sql.Date, payment_date || new Date());
+      pReq.input('amt', sql.BigInt, amount_paise);
+      pReq.input('mth', sql.VarChar(50), payment_method || 'Cash');
+      pReq.input('ref', sql.NVarChar(255), transaction_ref || null);
+      pReq.input('bnk', sql.NVarChar(255), bank_name || null);
+      pReq.input('cby', sql.UniqueIdentifier, userId);
+      pReq.input('rmk', sql.NVarChar(sql.MAX), remarks || null);
+      await pReq.query(`
+        INSERT INTO fee_payments (id, school_id, invoice_id, fee_account_id, student_id, receipt_no, payment_date, amount_paise, payment_method, transaction_ref, bank_name, collected_by, remarks)
+        VALUES (@id, @sid, @invId, @aid, @uid, @rcpt, @dt, @amt, @mth, @ref, @bnk, @cby, @rmk)
+      `);
 
-      // Update invoice paid_paise + status
-      const inv = tx.request();
-      inv.input('amount', sql.BigInt, amount_paise);
-      inv.input('invoiceId', sql.UniqueIdentifier, invoice_id);
-      await inv.query(
-        `UPDATE fee_invoices
-         SET paid_paise = paid_paise + @amount,
-             balance_paise = total_paise - paid_paise - @amount,
-             status = CASE
-               WHEN total_paise <= paid_paise + @amount THEN 'paid'
-               ELSE 'partial' END,
-             updated_at = GETUTCDATE()
-         WHERE id = @invoiceId`
-      );
+      // 4. Update Student Fee Account
+      const accReq = tx.request();
+      accReq.input('aid', sql.UniqueIdentifier, accountId);
+      accReq.input('amt', sql.BigInt, amount_paise);
+      await accReq.query(`
+        UPDATE student_fee_accounts
+        SET paid_paise = paid_paise + @amt,
+            pending_paise = CASE WHEN pending_paise - @amt < 0 THEN 0 ELSE pending_paise - @amt END,
+            status = CASE WHEN pending_paise - @amt <= 0 THEN 'paid' ELSE 'partial' END,
+            updated_at = GETUTCDATE()
+        WHERE id = @aid
+      `);
 
-      // Update fee account
-      const acc = tx.request();
-      acc.input('amount',   sql.BigInt, amount_paise);
-      acc.input('accId',    sql.UniqueIdentifier, fee_account_id);
-      acc.input('payDate',  sql.Date, payment_date || new Date());
-      await acc.query(
-        `UPDATE student_fee_accounts
-         SET paid_paise    = paid_paise + @amount,
-             pending_paise = CASE WHEN pending_paise - @amount < 0 THEN 0 ELSE pending_paise - @amount END,
-             status        = CASE WHEN pending_paise - @amount <= 0 THEN 'paid' ELSE 'partial' END,
-             last_payment_date = @payDate,
-             updated_at    = GETUTCDATE()
-         WHERE id = @accId`
-      );
+      // 5. Update Invoice if linked
+      if (invoice_id) {
+        const invReq = tx.request();
+        invReq.input('invId', sql.UniqueIdentifier, invoice_id);
+        invReq.input('amt', sql.BigInt, amount_paise);
+        await invReq.query(`
+          UPDATE fee_invoices
+          SET paid_paise = paid_paise + @amt,
+              balance_paise = CASE WHEN total_paise - discount_paise - paid_paise - @amt < 0 THEN 0 ELSE total_paise - discount_paise - paid_paise - @amt END,
+              status = CASE WHEN total_paise - discount_paise <= paid_paise + @amt THEN 'paid' ELSE 'partial' END,
+              updated_at = GETUTCDATE()
+          WHERE id = @invId
+        `);
+      }
+
+      // 6. Log to Dashboard Recent Activity
+      await logAudit(tx, {
+        schoolId,
+        userId,
+        userName,
+        actionType: 'FEE_PAID',
+        details: {
+          studentName,
+          amount: (amount_paise / 100).toFixed(0),
+          receiptNo: generatedReceipt,
+          paymentMethod: payment_method || 'Cash'
+        }
+      });
     });
 
-    await audit({ req, action: 'PAYMENT', tableName: 'fee_payments', recordId: paymentId, newValues: req.body });
-    return created(res, { id: paymentId }, 'Payment recorded successfully');
+    return created(res, { id: paymentId, receipt_no: generatedReceipt }, `Payment of ₹${(amount_paise/100).toFixed(2)} recorded successfully`);
   } catch (err) { next(err); }
 };
 
-// ── DELETE /api/fees/payments/:id (void) ─────────────────────────────────
+// ── 5. DELETE /api/fees/payments/:id (Void Transaction) ───────────────────
 exports.voidPayment = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { schoolId, userId } = req.user;
+    const { schoolId, id: userId, name: userName } = req.user;
     const { void_reason } = req.body;
 
+    if (!void_reason) return badRequest(res, 'A valid reason is required to void this receipt');
+
     const payment = await queryOne(
-      `SELECT * FROM fee_payments WHERE id=@id AND school_id=@sid AND is_void=0 AND deleted_at IS NULL`,
+      `SELECT * FROM fee_payments WHERE id = @id AND school_id = @sid AND is_void = 0 AND deleted_at IS NULL`,
       { id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
-    if (!payment) return notFound(res, 'Payment not found or already voided');
+    if (!payment) return notFound(res, 'Payment transaction not found or already voided');
 
     await withTransaction(async (tx) => {
-      const r1 = tx.request();
-      r1.input('id', sql.UniqueIdentifier, id);
-      r1.input('voidedBy', sql.UniqueIdentifier, userId);
-      r1.input('reason', sql.NVarChar(sql.MAX), void_reason || null);
-      await r1.query(
-        `UPDATE fee_payments SET is_void=1, voided_by=@voidedBy, voided_at=GETUTCDATE(),
-           void_reason=@reason WHERE id=@id`
-      );
-      // Reverse amounts
-      const r2 = tx.request();
-      r2.input('amount', sql.BigInt, payment.amount_paise);
-      r2.input('invoiceId', sql.UniqueIdentifier, payment.invoice_id);
-      await r2.query(
-        `UPDATE fee_invoices SET paid_paise=paid_paise-@amount,
-           balance_paise=balance_paise+@amount, status='partial', updated_at=GETUTCDATE()
-         WHERE id=@invoiceId`
-      );
-      const r3 = tx.request();
-      r3.input('amount', sql.BigInt, payment.amount_paise);
-      r3.input('accId', sql.UniqueIdentifier, payment.fee_account_id);
-      await r3.query(
-        `UPDATE student_fee_accounts SET paid_paise=paid_paise-@amount,
-           pending_paise=pending_paise+@amount, status='partial', updated_at=GETUTCDATE()
-         WHERE id=@accId`
-      );
+      // 1. Mark Void
+      const vReq = tx.request();
+      vReq.input('id', sql.UniqueIdentifier, id);
+      vReq.input('vby', sql.UniqueIdentifier, userId);
+      vReq.input('rsn', sql.NVarChar(sql.MAX), void_reason);
+      await vReq.query(`
+        UPDATE fee_payments 
+        SET is_void = 1, voided_by = @vby, voided_at = GETUTCDATE(), void_reason = @rsn, updated_at = GETUTCDATE()
+        WHERE id = @id
+      `);
+
+      // 2. Reverse Student Fee Account
+      const accReq = tx.request();
+      accReq.input('aid', sql.UniqueIdentifier, payment.fee_account_id);
+      accReq.input('amt', sql.BigInt, payment.amount_paise);
+      await accReq.query(`
+        UPDATE student_fee_accounts
+        SET paid_paise = CASE WHEN paid_paise - @amt < 0 THEN 0 ELSE paid_paise - @amt END,
+            pending_paise = pending_paise + @amt,
+            status = 'partial',
+            updated_at = GETUTCDATE()
+        WHERE id = @aid
+      `);
+
+      // 3. Reverse Invoice if linked
+      if (payment.invoice_id) {
+        const invReq = tx.request();
+        invReq.input('invId', sql.UniqueIdentifier, payment.invoice_id);
+        invReq.input('amt', sql.BigInt, payment.amount_paise);
+        await invReq.query(`
+          UPDATE fee_invoices
+          SET paid_paise = CASE WHEN paid_paise - @amt < 0 THEN 0 ELSE paid_paise - @amt END,
+              balance_paise = balance_paise + @amt,
+              status = 'partial',
+              updated_at = GETUTCDATE()
+          WHERE id = @invId
+        `);
+      }
     });
 
-    await audit({ req, action: 'VOID_PAYMENT', tableName: 'fee_payments', recordId: id });
-    return success(res, null, 'Payment voided');
+    return success(res, null, 'Payment receipt voided and balances restored');
+  } catch (err) { next(err); }
+};
+
+// ── 6. POST /api/fees/structures (Class-wise Fee Head Configuration) ───────
+exports.saveFeeStructure = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { grade_id, academic_year_id, category_name, amount_paise, frequency } = req.body;
+
+    if (!grade_id || !academic_year_id || !category_name || !amount_paise) {
+      return badRequest(res, 'grade_id, academic_year_id, category_name, and amount_paise are required');
+    }
+
+    await withTransaction(async (tx) => {
+      // Find or create Category Head
+      let cat = await queryOne(
+        `SELECT id FROM fee_categories WHERE school_id = @sid AND name = @name AND deleted_at IS NULL`,
+        { sid: { type: sql.UniqueIdentifier, value: schoolId }, name: { type: sql.NVarChar(100), value: category_name.trim() } }
+      );
+      let catId = cat ? cat.id : uuidv4();
+
+      if (!cat) {
+        const cReq = tx.request();
+        cReq.input('cid', sql.UniqueIdentifier, catId);
+        cReq.input('sid', sql.UniqueIdentifier, schoolId);
+        cReq.input('name', sql.NVarChar(100), category_name.trim());
+        await cReq.query(`INSERT INTO fee_categories (id, school_id, name) VALUES (@cid, @sid, @name)`);
+      }
+
+      // Upsert Fee Structure
+      const sReq = tx.request();
+      sReq.input('sid', sql.UniqueIdentifier, schoolId);
+      sReq.input('gid', sql.UniqueIdentifier, grade_id);
+      sReq.input('cid', sql.UniqueIdentifier, catId);
+      sReq.input('ayid', sql.UniqueIdentifier, academic_year_id);
+      sReq.input('amt', sql.BigInt, amount_paise);
+      sReq.input('freq', sql.VarChar(20), frequency || 'monthly');
+
+      await sReq.query(`
+        MERGE fee_structures AS target
+        USING (SELECT @sid AS school_id, @gid AS grade_id, @cid AS fee_category_id, @ayid AS academic_year_id) AS source
+        ON (target.school_id = source.school_id AND target.grade_id = source.grade_id AND target.fee_category_id = source.fee_category_id AND target.academic_year_id = source.academic_year_id)
+        WHEN MATCHED THEN
+          UPDATE SET amount_paise = @amt, frequency = @freq, updated_at = GETUTCDATE()
+        WHEN NOT MATCHED THEN
+          INSERT (id, school_id, grade_id, fee_category_id, academic_year_id, amount_paise, frequency)
+          VALUES (NEWID(), @sid, @gid, @cid, @ayid, @amt, @freq);
+      `);
+    });
+
+    return success(res, null, 'Fee structure configured successfully');
   } catch (err) { next(err); }
 };
