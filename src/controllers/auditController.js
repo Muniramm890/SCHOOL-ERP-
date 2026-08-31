@@ -35,7 +35,8 @@ exports.getAuditLogs = async (req, res, next) => {
 
 
 
-// GET /api/audit/recent-activity
+
+
 exports.getRecentActivity = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -47,6 +48,35 @@ exports.getRecentActivity = async (req, res, next) => {
        ORDER BY created_at DESC`,
       { sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
-    return success(res, result.recordset, 'Recent activity fetched');
+
+    // FIX: Parse the details string into a JSON object and create a UI-friendly message
+    const formattedActivity = result.recordset.map(row => {
+      let parsedDetails = {};
+      try {
+        parsedDetails = row.details ? JSON.parse(row.details) : {};
+      } catch (e) {
+        parsedDetails = row.details; // Fallback if not valid JSON
+      }
+
+      // Generate a dynamic message based on action_type
+      let displayMessage = `${row.user_name || 'Someone'} performed an action.`;
+
+      if (row.action_type === 'ATTENDANCE_MARKED') {
+         // Using parsedDetails to build the string
+         const className = parsedDetails.section_name ? `for ${parsedDetails.section_name}` : '';
+         displayMessage = `${row.user_name} marked attendance ${className} (${parsedDetails.count || 0} students) on ${parsedDetails.date || ''}.`;
+      } else if (row.action_type === 'STAFF_ATTENDANCE_MARKED') {
+         displayMessage = `${row.user_name} marked staff attendance on ${parsedDetails.date || ''}.`;
+      }
+      // Add more else-if blocks for FEE_PAID, HOMEWORK_ASSIGNED etc...
+
+      return {
+        ...row,
+        details: parsedDetails, // Frontend can now read item.details.count easily
+        displayMessage // Frontend can directly render {item.displayMessage}
+      };
+    });
+
+    return success(res, formattedActivity, 'Recent activity fetched');
   } catch (err) { next(err); }
 };
