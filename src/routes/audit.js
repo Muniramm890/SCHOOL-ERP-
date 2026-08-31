@@ -5,5 +5,6 @@ const { authenticate, authorize } = require('../middleware/auth');
 
 router.use(authenticate);
 router.get('/', authorize('school_admin', 'admin', 'principal'), ctrl.getAuditLogs);
+router.get('/recent-activity', ctrl.getRecentActivity);
 
 module.exports = router;
