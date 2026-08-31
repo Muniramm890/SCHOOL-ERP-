@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { query, queryOne, sql } = require('../config/db');
 const { success, badRequest, unauthorized } = require('../utils/response');
+const { logAudit } = require('../utils/auditLogger');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 // Hardcode the secret for testing right now
@@ -16,11 +17,11 @@ const signRefresh = (payload) =>
 // ── POST /api/auth/login ───────────────────────────────────────────────────
 exports.login = async (req, res, next) => {
   try {
-    // 🔥 Smart Login: Frontend se sirf Email aur Password aayega
     const { email, password } = req.body;
     if (!email || !password) return badRequest(res, 'Email and password are required');
 
-    // 1. Find User by Email (users table se direct password layenge)
+    const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+
     const user = await queryOne(`
       SELECT id, full_name, email, password, is_active 
       FROM users 
@@ -28,15 +29,32 @@ exports.login = async (req, res, next) => {
     `, {
       email: { type: sql.NVarChar(255), value: email }
     });
-    
-    if (!user) return unauthorized(res, 'Invalid email or password');
+
+    if (!user) {
+      await logAudit({
+        actionType: 'LOGIN_FAILED',
+        userName: email,
+        ipAddress: ip,
+        userAgent: req.headers['user-agent'],
+        details: { reason: 'user_not_found' },
+      });
+      return unauthorized(res, 'Invalid email or password');
+    }
     if (!user.is_active) return unauthorized(res, 'Your account is inactive. Please contact support.');
 
-    // 2. Verify Password using Bcrypt (Security check)
     const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) return unauthorized(res, 'Invalid email or password');
+    if (!validPassword) {
+      await logAudit({
+        userId: user.id,
+        actionType: 'LOGIN_FAILED',
+        userName: email,
+        ipAddress: ip,
+        userAgent: req.headers['user-agent'],
+        details: { reason: 'wrong_password' },
+      });
+      return unauthorized(res, 'Invalid email or password');
+    }
 
-    // 3. Find User's School & Role (Multi-Tenant Routing)
     const memberData = await queryOne(`
       SELECT sm.school_id, sm.role, sm.permissions, sm.is_active AS member_active, 
              s.name AS school_name, s.slug AS school_code
@@ -48,28 +66,32 @@ exports.login = async (req, res, next) => {
     if (!memberData) return unauthorized(res, 'User is not assigned to any active school');
     if (!memberData.member_active) return unauthorized(res, 'Your school access is currently suspended');
 
-    // 4. Update Last Login Timestamp
     await query(`UPDATE users SET last_login_at = GETUTCDATE() WHERE id = @userId`, { 
       userId: { type: sql.UniqueIdentifier, value: user.id } 
     });
 
-    // 5. Generate Secure JWT Tokens
     const payload = { userId: user.id, schoolId: memberData.school_id, role: memberData.role };
     const token = signToken(payload);
     const refreshToken = signRefresh(payload);
 
-    // 6. Return Data (🔥 Dual-Payload Strategy for 100% Frontend Compatibility)
+    // 🔴 Audit log — successful login
+    await logAudit({
+      schoolId: memberData.school_id,
+      userId: user.id,
+      userName: user.full_name,
+      userRole: memberData.role,
+      actionType: 'LOGIN',
+      ipAddress: ip,
+      userAgent: req.headers['user-agent'],
+    });
+
     return success(res, {
       token,
       refreshToken,
-      
-      // ✅ Flat data (Aapke existing React frontend ke exact data types se match karne ke liye)
       userId: user.id,
       name: user.full_name,
       role: memberData.role,
       schoolId: memberData.school_id,
-
-      // ✅ Nested object (Future components mein deep detail show karne ke liye)
       user: {
         id: user.id,
         fullName: user.full_name,
