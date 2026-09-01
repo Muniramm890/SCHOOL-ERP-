@@ -32,78 +32,121 @@ async function buildReceiptPdf({ school, payment, student, items }) {
 
       const brandColor = school.brand_color || '#E8600A';
 
-      // ── HEADER ──
+      // ── HEADER (Improved) ──
       const logoBuf = await fetchImageBuffer(school.logo_url);
       let headerY = 40;
+      
+      // School Logo
       if (logoBuf) {
-        try { doc.image(logoBuf, 40, headerY, { width: 55, height: 55 }); } catch {}
+        try { doc.image(logoBuf, 40, headerY, { width: 65, height: 65, align: 'center', valign: 'center' }); } catch {}
       }
-      doc.fillColor(brandColor).fontSize(20).font('Helvetica-Bold')
-        .text(school.name || 'School', logoBuf ? 105 : 40, headerY, { width: 400 });
-      doc.fillColor('#555').fontSize(9).font('Helvetica')
+
+      // School Name & Address
+      const textStartX = logoBuf ? 120 : 40;
+      doc.fillColor(brandColor).fontSize(22).font('Helvetica-Bold')
+        .text(school.name?.toUpperCase() || 'SCHOOL NAME', textStartX, headerY, { width: 430 });
+      
+      doc.fillColor('#444').fontSize(10).font('Helvetica')
         .text(
-          [school.address_line1, school.city, school.state, school.pincode].filter(Boolean).join(', '),
-          logoBuf ? 105 : 40, headerY + 24, { width: 400 }
+          [school.address_line1, school.address_line2, school.city, school.state, school.pincode].filter(Boolean).join(', '),
+          textStartX, headerY + 28, { width: 430 }
         );
-      doc.text(
-        [school.phone, school.email].filter(Boolean).join('  |  '),
-        logoBuf ? 105 : 40, headerY + 38, { width: 400 }
-      );
+      
+      doc.fontSize(9).fillColor('#666')
+        .text(
+          `Phone: ${school.phone || 'N/A'}  |  Email: ${school.email || 'N/A'}`,
+          textStartX, headerY + 42, { width: 430 }
+        );
+        
+      if (school.website) {
+         doc.text(`Website: ${school.website}`, textStartX, headerY + 54, { width: 430 });
+      }
 
-      doc.moveTo(40, 105).lineTo(555, 105).strokeColor(brandColor).lineWidth(1.5).stroke();
+      // Divider Line
+      doc.moveTo(40, 120).lineTo(555, 120).strokeColor(brandColor).lineWidth(2).stroke();
 
-      // ── TITLE ──
-      doc.fillColor('#111').fontSize(16).font('Helvetica-Bold')
-        .text('FEE RECEIPT', 40, 118, { align: 'center', width: 515 });
+      // ── TITLE & RECEIPT STATUS ──
+      doc.fillColor('#111').fontSize(18).font('Helvetica-Bold')
+        .text('FEE RECEIPT', 40, 135, { align: 'center', width: 515 });
 
-      // ── META ──
-      let y = 150;
-      doc.fontSize(10).font('Helvetica');
-      doc.fillColor('#333').text(`Receipt No: `, 40, y, { continued: true }).font('Helvetica-Bold').text(payment.receipt_no);
-      doc.font('Helvetica').text(`Date: `, 350, y, { continued: true }).font('Helvetica-Bold')
-        .text(new Date(payment.payment_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }));
+      if (payment.is_void) {
+         doc.fillColor('red').fontSize(14).font('Helvetica-Bold')
+           .text('[ VOID / CANCELLED ]', 40, 155, { align: 'center', width: 515 });
+      }
 
-      y += 22;
-      doc.font('Helvetica').fillColor('#333').text(`Student Name: `, 40, y, { continued: true }).font('Helvetica-Bold').text(student.student_name);
-      y += 16;
-      doc.font('Helvetica').text(`Class / Section: `, 40, y, { continued: true }).font('Helvetica-Bold')
-        .text(`${student.class_name || '-'} ${student.section_name || ''}`);
-      doc.font('Helvetica').text(`Admission No: `, 350, y, { continued: true }).font('Helvetica-Bold').text(student.admission_no || '-');
-      y += 16;
-      doc.font('Helvetica').text(`Payment Method: `, 40, y, { continued: true }).font('Helvetica-Bold').text(payment.payment_method);
-      if (payment.transaction_ref) {
-        doc.font('Helvetica').text(`Ref: `, 350, y, { continued: true }).font('Helvetica-Bold').text(payment.transaction_ref);
+      // ── META INFORMATION (Two Columns) ──
+      let y = payment.is_void ? 185 : 170;
+      doc.rect(40, y - 5, 515, 90).fillAndStroke('#fafafa', '#e0e0e0');
+      
+      doc.fontSize(10).fillColor('#333');
+      
+      // Column 1 (Left) - Receipt Details
+      doc.font('Helvetica').text(`Receipt No:`, 50, y).font('Helvetica-Bold').text(payment.receipt_no, 130, y);
+      doc.font('Helvetica').text(`Date:`, 50, y + 16).font('Helvetica-Bold')
+         .text(new Date(payment.payment_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }), 130, y + 16);
+      
+      // Payment Method & Transaction ID logic
+      doc.font('Helvetica').text(`Payment Mode:`, 50, y + 32).font('Helvetica-Bold').text((payment.payment_method || 'Cash').toUpperCase(), 130, y + 32);
+      
+      // If payment has transaction_ref OR razorpay_payment_id, print it
+      const txnId = payment.razorpay_payment_id || payment.transaction_ref;
+      if (txnId) {
+          doc.font('Helvetica').text(`Txn ID:`, 50, y + 48).font('Helvetica-Bold').text(txnId, 130, y + 48);
+      }
+      if (payment.bank_name) {
+          doc.font('Helvetica').text(`Bank/Gateway:`, 50, y + 64).font('Helvetica-Bold').text(payment.bank_name, 130, y + 64);
+      }
+
+      // Column 2 (Right) - Student Details
+      doc.font('Helvetica').text(`Student Name:`, 310, y).font('Helvetica-Bold').text(student.student_name, 390, y);
+      doc.font('Helvetica').text(`Admission No:`, 310, y + 16).font('Helvetica-Bold').text(student.admission_no || '-', 390, y + 16);
+      doc.font('Helvetica').text(`Class & Sec:`, 310, y + 32).font('Helvetica-Bold').text(`${student.class_name || '-'} ${student.section_name ? '('+student.section_name+')' : ''}`, 390, y + 32);
+      if (student.roll_no) {
+         doc.font('Helvetica').text(`Roll No:`, 310, y + 48).font('Helvetica-Bold').text(student.roll_no, 390, y + 48);
       }
 
       // ── TABLE ──
-      y += 34;
-      doc.rect(40, y, 515, 24).fill(brandColor);
-      doc.fillColor('#fff').fontSize(10).font('Helvetica-Bold');
-      doc.text('Fee Head', 50, y + 7);
-      doc.text('Amount', 480, y + 7, { width: 65, align: 'right' });
-      y += 24;
+      y += 110;
+      doc.rect(40, y, 515, 26).fill(brandColor);
+      doc.fillColor('#fff').fontSize(11).font('Helvetica-Bold');
+      doc.text('S.No.', 50, y + 8, { width: 40 });
+      doc.text('Fee Description', 100, y + 8);
+      doc.text('Amount', 480, y + 8, { width: 65, align: 'right' });
+      y += 26;
 
-      const rows = items.length > 0 ? items : [{ category_name: 'Fee Payment', amount_paise: payment.amount_paise }];
+      const rows = items && items.length > 0 ? items : [{ category_name: 'Total Fee Payment (Consolidated)', amount_paise: payment.amount_paise }];
+      
       doc.fillColor('#222').font('Helvetica').fontSize(10);
       rows.forEach((it, i) => {
-        const rowH = 22;
-        if (i % 2 === 1) { doc.rect(40, y, 515, rowH).fill('#f7f7f7'); doc.fillColor('#222'); }
-        doc.text(it.category_name, 50, y + 6);
-        doc.text(money(it.amount_paise), 480, y + 6, { width: 65, align: 'right' });
+        const rowH = 26;
+        if (i % 2 === 1) { doc.rect(40, y, 515, rowH).fill('#f9f9f9'); doc.fillColor('#222'); }
+        doc.text((i + 1).toString(), 50, y + 8, { width: 40 });
+        doc.text(it.category_name, 100, y + 8);
+        doc.text(money(it.amount_paise), 480, y + 8, { width: 65, align: 'right' });
         y += rowH;
       });
 
-      doc.moveTo(40, y).lineTo(555, y).strokeColor('#ccc').stroke();
-      y += 8;
+      doc.moveTo(40, y).lineTo(555, y).strokeColor('#ccc').lineWidth(1).stroke();
+      y += 12;
+      
+      // Total Box
+      doc.rect(340, y - 6, 215, 28).fill('#f2f2f2').stroke('#ddd');
       doc.font('Helvetica-Bold').fontSize(12).fillColor(brandColor)
-        .text('Total Paid:', 350, y, { continued: true }).text('  ' + money(payment.amount_paise), { align: 'right' });
+        .text('Total Paid Amount:', 350, y + 2, { continued: true }).text(money(payment.amount_paise), { align: 'right' });
+
+      // Amount in Words (Optional extra professional touch)
+      // doc.fontSize(9).fillColor('#555').font('Helvetica-Oblique').text(`Received sum of ${money(payment.amount_paise)} only.`, 40, y + 40);
+
+      if (payment.remarks) {
+          doc.fontSize(9).fillColor('#555').font('Helvetica').text(`Remarks: ${payment.remarks}`, 40, y + 45, { width: 515 });
+      }
 
       // ── FOOTER ──
-      const footerY = 740;
-      doc.moveTo(40, footerY).lineTo(555, footerY).strokeColor('#ddd').stroke();
-      doc.fontSize(8).fillColor('#888').font('Helvetica')
-        .text(`Collected by: ${payment.collected_by_name || 'System'}`, 40, footerY + 8);
-      doc.text('This is a computer generated receipt and does not require a signature.', 40, footerY + 20, { align: 'center', width: 515 });
+      const footerY = 730;
+      doc.moveTo(40, footerY).lineTo(555, footerY).strokeColor('#ddd').lineWidth(1).stroke();
+      doc.fontSize(8).fillColor('#777').font('Helvetica-Oblique')
+        .text(`Collected by: ${payment.collected_by_name || 'Online Payment System'}`, 40, footerY + 10);
+      doc.font('Helvetica').text('This is a computer-generated receipt and does not require a physical signature.', 40, footerY + 22, { align: 'center', width: 515 });
       doc.fillColor(brandColor).font('Helvetica-Bold').text(school.name || '', 40, footerY + 34, { align: 'center', width: 515 });
 
       doc.end();
@@ -121,7 +164,7 @@ function uploadPdfBuffer(buffer, publicId) {
   });
 }
 
-// ── MAIN: get existing receipt_url, or generate + upload + save ──
+// ── MAIN ──
 exports.getOrGenerateReceipt = async (schoolId, paymentId) => {
   const payment = await queryOne(
     `SELECT fp.*, u.full_name AS collected_by_name
@@ -135,14 +178,14 @@ exports.getOrGenerateReceipt = async (schoolId, paymentId) => {
   if (payment.receipt_url) return payment.receipt_url;
 
   const school = await queryOne(
-    `SELECT name, logo_url, brand_color, address_line1, city, state, pincode, phone, email
+    `SELECT name, logo_url, brand_color, address_line1, address_line2, city, state, pincode, phone, email, website
      FROM schools WHERE id=@sid`,
     { sid: { type: sql.UniqueIdentifier, value: schoolId } }
   );
 
   const student = await queryOne(
     `SELECT s.first_name + ' ' + ISNULL(s.last_name,'') AS student_name, s.admission_no,
-            g.name AS class_name, sc.name AS section_name
+            g.name AS class_name, sc.name AS section_name, e.roll_no
      FROM students s
      LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id=@sid AND e.is_active=1
      LEFT JOIN sections sc ON sc.id = e.section_id
