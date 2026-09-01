@@ -179,10 +179,12 @@ exports.verifyAndRecord = async (req, res, next) => {
           INSERT INTO audit_logs (id, school_id, user_id, user_name, action_type, details, created_at)
           VALUES (@lid, @sid, @uid, @unm, @act, @det, GETUTCDATE())
         `);
-      } catch (logErr) {
+     } catch (logErr) {
         console.warn('Audit Logging Warning (Razorpay):', logErr.message);
       }
       
     });
 
     return success(res, { id: paymentId, receipt_no: generatedReceipt }, `Payment of ₹${(amount_paise/100).toFixed(2)} verified & recorded`);
+  } catch (err) { next(err); }
+};
