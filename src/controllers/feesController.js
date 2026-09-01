@@ -419,3 +419,172 @@ exports.saveFeeStructure = async (req, res, next) => {
     return success(res, null, 'Fee structure configured successfully');
   } catch (err) { next(err); }
 };
+
+// GET /api/fees/structures?academic_year_id=
+exports.getFeeStructures = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { academic_year_id } = req.query;
+    const rows = await query(`
+      SELECT fs.id, fs.grade_id, g.name AS grade_name, g.numeric_order,
+             fs.fee_category_id, fc.name AS category_name,
+             fs.amount_paise, fs.frequency, fs.due_day_of_month,
+             fs.late_fee_paise, fs.grace_days
+      FROM fee_structures fs
+      JOIN grades g ON g.id = fs.grade_id
+      JOIN fee_categories fc ON fc.id = fs.fee_category_id
+      WHERE fs.school_id=@sid AND fs.academic_year_id=@ayid AND fs.deleted_at IS NULL
+      ORDER BY g.numeric_order, fc.name`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId },
+        ayid: { type: sql.UniqueIdentifier, value: academic_year_id } });
+    return success(res, rows.recordset);
+  } catch (err) { next(err); }
+};
+
+// GET /api/fees/categories
+exports.listCategories = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const rows = await query(
+      `SELECT id, name, is_recurring FROM fee_categories WHERE school_id=@sid AND is_active=1 AND deleted_at IS NULL ORDER BY name`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId } });
+    return success(res, rows.recordset);
+  } catch (err) { next(err); }
+};
+
+// POST /api/fees/categories
+exports.createCategory = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { name, is_recurring } = req.body;
+    if (!name) return badRequest(res, 'name is required');
+    const id = uuidv4();
+    await query(
+      `INSERT INTO fee_categories (id, school_id, name, is_recurring) VALUES (@id,@sid,@name,@rec)`,
+      { id: { type: sql.UniqueIdentifier, value: id },
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        name: { type: sql.NVarChar(200), value: name.trim() },
+        rec: { type: sql.Bit, value: is_recurring !== false } });
+    return created(res, { id }, 'Category created');
+  } catch (err) { next(err); }
+};
+
+// PUT /api/fees/structures/bulk
+exports.bulkSaveFeeStructures = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { academic_year_id, entries } = req.body; // [{grade_id, fee_category_id, amount_paise, frequency, due_day_of_month, late_fee_paise, grace_days}]
+    if (!academic_year_id || !Array.isArray(entries)) return badRequest(res, 'academic_year_id and entries[] required');
+
+    await withTransaction(async (tx) => {
+      for (const e of entries) {
+        const r = tx.request();
+        r.input('sid', sql.UniqueIdentifier, schoolId);
+        r.input('gid', sql.UniqueIdentifier, e.grade_id);
+        r.input('cid', sql.UniqueIdentifier, e.fee_category_id);
+        r.input('ayid', sql.UniqueIdentifier, academic_year_id);
+        r.input('amt', sql.BigInt, e.amount_paise);
+        r.input('freq', sql.VarChar(20), e.frequency || 'monthly');
+        r.input('due', sql.SmallInt, e.due_day_of_month || 10);
+        r.input('late', sql.BigInt, e.late_fee_paise || 0);
+        r.input('grace', sql.SmallInt, e.grace_days || 0);
+        await r.query(`
+          MERGE fee_structures AS t
+          USING (SELECT @sid sid,@gid gid,@cid cid,@ayid ayid) s
+          ON (t.school_id=s.sid AND t.grade_id=s.gid AND t.fee_category_id=s.cid AND t.academic_year_id=s.ayid)
+          WHEN MATCHED THEN UPDATE SET amount_paise=@amt, frequency=@freq, due_day_of_month=@due,
+            late_fee_paise=@late, grace_days=@grace, updated_at=GETUTCDATE()
+          WHEN NOT MATCHED THEN INSERT (id, school_id, grade_id, fee_category_id, academic_year_id, amount_paise, frequency, due_day_of_month, late_fee_paise, grace_days)
+            VALUES (NEWID(),@sid,@gid,@cid,@ayid,@amt,@freq,@due,@late,@grace);
+        `);
+      }
+    });
+    return success(res, null, 'Fee structures saved');
+  } catch (err) { next(err); }
+};
+
+// POST /api/fees/generate-invoices  { grade_id?, academic_year_id, month_index, title, due_date }
+exports.generateInvoices = async (req, res, next) => {
+  try {
+    const { schoolId, id: userId, name: userName } = req.user;
+    const { grade_id, academic_year_id, month_index, title, due_date } = req.body;
+    if (!academic_year_id || !title || !due_date) return badRequest(res, 'academic_year_id, title, due_date required');
+
+    let genCount = 0;
+    await withTransaction(async (tx) => {
+      const sReq = tx.request();
+      sReq.input('sid', sql.UniqueIdentifier, schoolId);
+      sReq.input('ayid', sql.UniqueIdentifier, academic_year_id);
+      if (grade_id) sReq.input('gid', sql.UniqueIdentifier, grade_id);
+      const students = await sReq.query(`
+        SELECT s.id AS student_id, g.id AS grade_id
+        FROM students s
+        JOIN enrolments e ON e.student_id=s.id AND e.school_id=@sid AND e.academic_year_id=@ayid AND e.is_active=1 AND e.deleted_at IS NULL
+        JOIN sections sc ON sc.id=e.section_id
+        JOIN grades g ON g.id=sc.grade_id ${grade_id ? 'AND g.id=@gid' : ''}
+        WHERE s.school_id=@sid AND s.deleted_at IS NULL AND s.is_active=1
+      `);
+
+      for (const stu of students.recordset) {
+        const fReq = tx.request();
+        fReq.input('sid', sql.UniqueIdentifier, schoolId);
+        fReq.input('gid', sql.UniqueIdentifier, stu.grade_id);
+        fReq.input('ayid', sql.UniqueIdentifier, academic_year_id);
+        const structs = await fReq.query(`
+          SELECT fee_category_id, amount_paise FROM fee_structures
+          WHERE school_id=@sid AND grade_id=@gid AND academic_year_id=@ayid AND is_active=1 AND deleted_at IS NULL
+        `);
+        if (!structs.recordset.length) continue;
+        const total = structs.recordset.reduce((s, r) => s + r.amount_paise, 0);
+
+        const invId = uuidv4();
+        const numReq = tx.request();
+        numReq.input('sid', sql.UniqueIdentifier, schoolId);
+        const numRes = await numReq.query(`
+          SELECT 'INV-' + FORMAT(GETUTCDATE(),'yyyyMM') + '-' + RIGHT('0000'+CAST(COUNT(*)+1 AS VARCHAR),4) AS invoice_no
+          FROM fee_invoices WHERE school_id=@sid AND FORMAT(created_at,'yyyyMM')=FORMAT(GETUTCDATE(),'yyyyMM')`);
+        const invoiceNo = numRes.recordset[0].invoice_no;
+
+        const iReq = tx.request();
+        iReq.input('id', sql.UniqueIdentifier, invId);
+        iReq.input('sid', sql.UniqueIdentifier, schoolId);
+        iReq.input('uid', sql.UniqueIdentifier, stu.student_id);
+        iReq.input('ayid', sql.UniqueIdentifier, academic_year_id);
+        iReq.input('no', sql.NVarChar(200), invoiceNo);
+        iReq.input('title', sql.NVarChar(510), title);
+        iReq.input('mo', sql.SmallInt, month_index || null);
+        iReq.input('due', sql.Date, due_date);
+        iReq.input('total', sql.BigInt, total);
+        iReq.input('cby', sql.UniqueIdentifier, userId);
+        await iReq.query(`
+          INSERT INTO fee_invoices (id, school_id, student_id, academic_year_id, invoice_no, title, month_index, due_date, total_paise, balance_paise, created_by)
+          VALUES (@id,@sid,@uid,@ayid,@no,@title,@mo,@due,@total,@total,@cby)
+        `);
+
+        for (const item of structs.recordset) {
+          const itReq = tx.request();
+          itReq.input('iid', sql.UniqueIdentifier, invId);
+          itReq.input('cid', sql.UniqueIdentifier, item.fee_category_id);
+          itReq.input('amt', sql.BigInt, item.amount_paise);
+          await itReq.query(`INSERT INTO fee_invoice_items (id, invoice_id, fee_category_id, amount_paise) VALUES (NEWID(),@iid,@cid,@amt)`);
+        }
+
+        const accReq = tx.request();
+        accReq.input('sid', sql.UniqueIdentifier, schoolId);
+        accReq.input('uid', sql.UniqueIdentifier, stu.student_id);
+        accReq.input('amt', sql.BigInt, total);
+        await accReq.query(`
+          MERGE student_fee_accounts AS t
+          USING (SELECT @sid sid,@uid uid) s ON (t.school_id=s.sid AND t.student_id=s.uid)
+          WHEN MATCHED THEN UPDATE SET total_fee_paise=total_fee_paise+@amt, pending_paise=pending_paise+@amt, status='pending', updated_at=GETUTCDATE()
+          WHEN NOT MATCHED THEN INSERT (id, school_id, student_id, total_fee_paise, pending_paise, status)
+            VALUES (NEWID(),@sid,@uid,@amt,@amt,'pending');
+        `);
+        genCount++;
+      }
+      await logAudit(tx, { schoolId, userId, userName, actionType: 'INVOICES_GENERATED', details: { title, count: genCount } });
+    });
+
+    return success(res, { generated: genCount }, `${genCount} invoices generated`);
+  } catch (err) { next(err); }
+};
