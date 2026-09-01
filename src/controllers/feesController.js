@@ -497,7 +497,7 @@ exports.generateInvoices = async (req, res, next) => {
           WHERE school_id=@sid AND grade_id=@gid AND academic_year_id=@ayid AND is_active=1 AND deleted_at IS NULL
         `);
         if (!structs.recordset.length) continue;
-        const total = structs.recordset.reduce((s, r) => s + r.amount_paise, 0);
+        const total = structs.recordset.reduce((s, r) => s + Number(r.amount_paise), 0);
 
         const invId = uuidv4();
         const numReq = tx.request();
@@ -527,7 +527,7 @@ exports.generateInvoices = async (req, res, next) => {
           const itReq = tx.request();
           itReq.input('iid', sql.UniqueIdentifier, invId);
           itReq.input('cid', sql.UniqueIdentifier, item.fee_category_id);
-          itReq.input('amt', sql.BigInt, item.amount_paise);
+          itReq.input('amt', sql.BigInt, Number(item.amount_paise));
           await itReq.query(`INSERT INTO fee_invoice_items (id, invoice_id, fee_category_id, amount_paise) VALUES (NEWID(),@iid,@cid,@amt)`);
         }
 
