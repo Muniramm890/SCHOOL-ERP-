@@ -370,57 +370,7 @@ exports.voidPayment = async (req, res, next) => {
 };
 
 // ── 6. POST /api/fees/structures (Class-wise Fee Head Configuration) ───────
-exports.saveFeeStructure = async (req, res, next) => {
-  try {
-    const { schoolId } = req.user;
-    const { grade_id, academic_year_id, category_name, amount_paise, frequency } = req.body;
-
-    if (!grade_id || !academic_year_id || !category_name || !amount_paise) {
-      return badRequest(res, 'grade_id, academic_year_id, category_name, and amount_paise are required');
-    }
-
-    await withTransaction(async (tx) => {
-      // Find or create Category Head
-      let cat = await queryOne(
-        `SELECT id FROM fee_categories WHERE school_id = @sid AND name = @name AND deleted_at IS NULL`,
-        { sid: { type: sql.UniqueIdentifier, value: schoolId }, name: { type: sql.NVarChar(100), value: category_name.trim() } }
-      );
-      let catId = cat ? cat.id : uuidv4();
-
-      if (!cat) {
-        const cReq = tx.request();
-        cReq.input('cid', sql.UniqueIdentifier, catId);
-        cReq.input('sid', sql.UniqueIdentifier, schoolId);
-        cReq.input('name', sql.NVarChar(100), category_name.trim());
-        await cReq.query(`INSERT INTO fee_categories (id, school_id, name) VALUES (@cid, @sid, @name)`);
-      }
-
-      // Upsert Fee Structure
-      const sReq = tx.request();
-      sReq.input('sid', sql.UniqueIdentifier, schoolId);
-      sReq.input('gid', sql.UniqueIdentifier, grade_id);
-      sReq.input('cid', sql.UniqueIdentifier, catId);
-      sReq.input('ayid', sql.UniqueIdentifier, academic_year_id);
-      sReq.input('amt', sql.BigInt, amount_paise);
-      sReq.input('freq', sql.VarChar(20), frequency || 'monthly');
-
-      await sReq.query(`
-        MERGE fee_structures AS target
-        USING (SELECT @sid AS school_id, @gid AS grade_id, @cid AS fee_category_id, @ayid AS academic_year_id) AS source
-        ON (target.school_id = source.school_id AND target.grade_id = source.grade_id AND target.fee_category_id = source.fee_category_id AND target.academic_year_id = source.academic_year_id)
-        WHEN MATCHED THEN
-          UPDATE SET amount_paise = @amt, frequency = @freq, updated_at = GETUTCDATE()
-        WHEN NOT MATCHED THEN
-          INSERT (id, school_id, grade_id, fee_category_id, academic_year_id, amount_paise, frequency)
-          VALUES (NEWID(), @sid, @gid, @cid, @ayid, @amt, @freq);
-      `);
-    });
-
-    return success(res, null, 'Fee structure configured successfully');
-  } catch (err) { next(err); }
-};
-
-// GET /api/fees/structures?academic_year_id=
+// ── GET /api/fees/structures?academic_year_id= ────────────────────────────
 exports.getFeeStructures = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -441,7 +391,7 @@ exports.getFeeStructures = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// GET /api/fees/categories
+// ── GET /api/fees/categories ────────────────────────────────────────────
 exports.listCategories = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -452,7 +402,7 @@ exports.listCategories = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// POST /api/fees/categories
+// ── POST /api/fees/categories ───────────────────────────────────────────
 exports.createCategory = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -469,11 +419,23 @@ exports.createCategory = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// PUT /api/fees/structures/bulk
+// ── DELETE /api/fees/categories/:id ─────────────────────────────────────
+exports.deleteCategory = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { id } = req.params;
+    await query(
+      `UPDATE fee_categories SET is_active=0, deleted_at=GETUTCDATE() WHERE id=@id AND school_id=@sid`,
+      { id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } });
+    return success(res, null, 'Category removed');
+  } catch (err) { next(err); }
+};
+
+// ── PUT /api/fees/structures/bulk ───────────────────────────────────────
 exports.bulkSaveFeeStructures = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
-    const { academic_year_id, entries } = req.body; // [{grade_id, fee_category_id, amount_paise, frequency, due_day_of_month, late_fee_paise, grace_days}]
+    const { academic_year_id, entries } = req.body;
     if (!academic_year_id || !Array.isArray(entries)) return badRequest(res, 'academic_year_id and entries[] required');
 
     await withTransaction(async (tx) => {
@@ -503,7 +465,7 @@ exports.bulkSaveFeeStructures = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// POST /api/fees/generate-invoices  { grade_id?, academic_year_id, month_index, title, due_date }
+// ── POST /api/fees/generate-invoices ────────────────────────────────────
 exports.generateInvoices = async (req, res, next) => {
   try {
     const { schoolId, id: userId, name: userName } = req.user;
@@ -588,3 +550,32 @@ exports.generateInvoices = async (req, res, next) => {
     return success(res, { generated: genCount }, `${genCount} invoices generated`);
   } catch (err) { next(err); }
 };
+
+// ── GET /api/fees/payments (Receipts tab) ───────────────────────────────
+exports.listPayments = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { search, from, to, page = 1, limit = 25 } = req.query;
+    const offset = (page - 1) * limit;
+    let where = `fp.school_id=@sid AND fp.deleted_at IS NULL`;
+    const params = { sid: { type: sql.UniqueIdentifier, value: schoolId } };
+    if (from) { where += ` AND fp.payment_date >= @from`; params.from = { type: sql.Date, value: from }; }
+    if (to) { where += ` AND fp.payment_date <= @to`; params.to = { type: sql.Date, value: to }; }
+    if (search) { where += ` AND (fp.receipt_no LIKE @search OR s.first_name+' '+ISNULL(s.last_name,'') LIKE @search)`; params.search = { type: sql.NVarChar(255), value: `%${search.trim()}%` }; }
+
+    const count = await queryOne(`SELECT COUNT(*) AS total FROM fee_payments fp JOIN students s ON s.id=fp.student_id WHERE ${where}`, params);
+    const rows = await query(`
+      SELECT fp.id, fp.receipt_no, fp.payment_date, fp.amount_paise, fp.payment_method, fp.transaction_ref,
+             fp.is_void, fp.void_reason, s.first_name+' '+ISNULL(s.last_name,'') AS student_name, s.id AS student_id,
+             u.full_name AS collected_by_name
+      FROM fee_payments fp
+      JOIN students s ON s.id = fp.student_id
+      LEFT JOIN users u ON u.id = fp.collected_by
+      WHERE ${where}
+      ORDER BY fp.payment_date DESC, fp.created_at DESC
+      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+      { ...params, offset: { type: sql.Int, value: offset }, limit: { type: sql.Int, value: parseInt(limit) } });
+    return paginated(res, rows.recordset, count?.total || 0, parseInt(page), parseInt(limit));
+  } catch (err) { next(err); }
+};
+
