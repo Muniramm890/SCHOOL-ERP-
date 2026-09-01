@@ -28,7 +28,7 @@ exports.getOverview = async (req, res, next) => {
     const { schoolId } = req.user;
     const sid = { type: sql.UniqueIdentifier, value: schoolId };
 
-    const [summary, byClass, monthly] = await Promise.all([
+    const [summary, byClass, monthly, recentPayers] = await Promise.all([
       queryOne(
         `SELECT
            ISNULL(SUM(paid_paise), 0)                                AS total_paid_paise,
@@ -56,13 +56,28 @@ exports.getOverview = async (req, res, next) => {
         { sid }
       ),
       query(
-        `SELECT YEAR(payment_date) AS yr, MONTH(payment_date) AS mo,
+        `SELECT DATEPART(YEAR, payment_date) AS yr, DATEPART(WEEK, payment_date) AS wk,
+                MIN(payment_date) AS week_start,
                 ISNULL(SUM(amount_paise), 0) AS collected_paise, COUNT(*) AS txn_count
          FROM fee_payments
          WHERE school_id = @sid AND is_void = 0 AND deleted_at IS NULL
-           AND payment_date >= DATEADD(MONTH, -6, GETUTCDATE())
-         GROUP BY YEAR(payment_date), MONTH(payment_date)
-         ORDER BY yr, mo`,
+           AND payment_date >= DATEADD(WEEK, -10, GETUTCDATE())
+         GROUP BY DATEPART(YEAR, payment_date), DATEPART(WEEK, payment_date)
+         ORDER BY yr, wk`,
+        { sid }
+      ),
+       query(
+        `SELECT TOP 5 fp.student_id, s.first_name + ' ' + ISNULL(s.last_name,'') AS student_name,
+                s.photo_url, s.admission_no, fp.amount_paise, fp.payment_date,
+                g.name AS class_name, sc.name AS section_name
+         FROM fee_payments fp
+         JOIN students s ON s.id = fp.student_id
+         LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active = 1
+         LEFT JOIN sections sc ON sc.id = e.section_id
+         LEFT JOIN grades g ON g.id = sc.grade_id
+         WHERE fp.school_id = @sid AND fp.is_void = 0 AND fp.deleted_at IS NULL
+           AND fp.payment_date >= DATEADD(MONTH, -1, GETUTCDATE())
+         ORDER BY fp.payment_date DESC, fp.created_at DESC`,
         { sid }
       ),
     ]);
@@ -70,7 +85,8 @@ exports.getOverview = async (req, res, next) => {
     return success(res, {
       summary: summary || { total_paid_paise: 0, total_pending_paise: 0, total_fee_paise: 0 },
       byClass: byClass?.recordset || [],
-      monthly: monthly?.recordset || []
+      weekly: monthly?.recordset || [],
+      recentPayers: recentPayers?.recordset || []
     }, 'Fee overview calculated');
   } catch (err) { next(err); }
 };
