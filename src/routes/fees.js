@@ -2,6 +2,7 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/feesController');
 const { authenticate, authorize } = require('../middleware/auth');
+const feesController = require('../controllers/feesController');
 
 // 🔒 Sabhi routes ke liye mandatory authentication
 router.use(authenticate);
