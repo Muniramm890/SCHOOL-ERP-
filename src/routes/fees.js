@@ -16,6 +16,12 @@ router.get('/accounts', ctrl.listAccounts);
 // Individual student passbook (Profile, Invoices list & Receipt history)
 router.get('/accounts/:studentId', ctrl.getStudentAccount);
 
+router.get('/structures', feesController.getFeeStructures);
+router.put('/structures/bulk', feesController.bulkSaveFeeStructures);
+router.get('/categories', feesController.listCategories);
+router.post('/categories', feesController.createCategory);
+router.post('/generate-invoices', feesController.generateInvoices);
+
 // ── TRANSACTION & WRITE ROUTES (Role-Restricted & Audited) ────────────────
 // Record new fee collection and auto-generate instant receipt
 router.post(
