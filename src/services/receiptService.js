@@ -32,53 +32,66 @@ async function buildReceiptPdf({ school, payment, student, items }) {
 
       const brandColor = school.brand_color || '#E8600A';
 
-      // ── HEADER (Improved) ──
+     // ── WATERMARK ──
+      const watermarkUrl = school.watermark_url || school.logo_url;
+      const wmBuf = await fetchImageBuffer(watermarkUrl);
+      if (wmBuf) {
+        try {
+          doc.save();
+          doc.globalAlpha(0.08); // 8% opacity for pro-level light watermark
+          // Placed at center of A4 paper
+          doc.image(wmBuf, 147, 271, { fit: [300, 300], align: 'center', valign: 'center' });
+          doc.restore();
+        } catch (e) {}
+      }
+
+      // ── HEADER ──
       const logoBuf = await fetchImageBuffer(school.logo_url);
       let headerY = 40;
-      
-      // School Logo
+
       if (logoBuf) {
-        try { doc.image(logoBuf, 40, headerY, { width: 65, height: 65, align: 'center', valign: 'center' }); } catch {}
+        // 'fit' prevents API crash and forces correct aspect ratio
+        try { doc.image(logoBuf, 40, headerY, { fit: [70, 70] }); } catch {}
       }
 
-      // School Name & Address
       const textStartX = logoBuf ? 120 : 40;
-      const maxWidth = logoBuf ? 415 : 515;
+      const maxWidth = logoBuf ? 435 : 515;
       const schoolName = school.name?.toUpperCase() || 'SCHOOL NAME';
-      
-      // Auto-shrink font size to force School Name into a STRICT SINGLE LINE
-      let nameFontSize = 22;
+
+      // Auto-shrink font size to force single line
+      let nameFontSize = 24;
       doc.font('Helvetica-Bold');
-      while (doc.fontSize(nameFontSize).widthOfString(schoolName) > maxWidth && nameFontSize > 11) {
+      while (doc.fontSize(nameFontSize).widthOfString(schoolName) > maxWidth && nameFontSize > 12) {
           nameFontSize -= 1;
       }
-      
+
+      // Centered Title
       doc.fillColor(brandColor).fontSize(nameFontSize)
-        .text(schoolName, textStartX, headerY, { width: maxWidth, lineBreak: false });
-      
-      // Dynamic Y positioning based on the actual height of the previous text
-      let currentY = doc.y + 6; 
+        .text(schoolName, textStartX, headerY, { width: maxWidth, align: 'center', lineBreak: false });
 
-      doc.fillColor('#444').fontSize(10).font('Helvetica')
-        .text(
-          [school.address_line1, school.address_line2, school.city, school.state, school.pincode].filter(Boolean).join(', '),
-          textStartX, currentY, { width: maxWidth }
-        );
+      // Dynamically smaller Address & perfectly centered
+      let currentY = doc.y + 4;
+      const address = [school.address_line1, school.address_line2, school.city, school.state, school.pincode].filter(Boolean).join(', ');
       
-      currentY = doc.y + 4; 
+      let addrFontSize = Math.min(10, nameFontSize - 8);
+      if (addrFontSize < 8) addrFontSize = 8;
 
-      doc.fontSize(9).fillColor('#666')
-        .text(`Phone: ${school.phone || 'N/A'}  |  Email: ${school.email || 'N/A'}`, textStartX, currentY, { width: maxWidth });
+      doc.fillColor('#444').fontSize(addrFontSize).font('Helvetica')
+        .text(address, textStartX, currentY, { width: maxWidth, align: 'center' });
+
+      // Phone & Email Centered
+      currentY = doc.y + 3;
+      doc.fontSize(addrFontSize - 1).fillColor('#666')
+        .text(`Phone: ${school.phone || 'N/A'}  |  Email: ${school.email || 'N/A'}`, textStartX, currentY, { width: maxWidth, align: 'center' });
         
-      currentY = doc.y + 4;
-
+      currentY = doc.y + 3;
       if (school.website) {
-         doc.text(`Website: ${school.website}`, textStartX, currentY, { width: maxWidth });
+         doc.text(`Website: ${school.website}`, textStartX, currentY, { width: maxWidth, align: 'center' });
          currentY = doc.y + 4;
       }
 
-      // Divider Line (Pushed down dynamically if address is long)
-      const dividerY = Math.max(120, currentY + 10);
+      // Divider Line
+      const dividerY = Math.max(115, currentY + 12);
       doc.moveTo(40, dividerY).lineTo(555, dividerY).strokeColor(brandColor).lineWidth(2).stroke();
 
       // ── TITLE & RECEIPT STATUS ──
@@ -90,7 +103,8 @@ async function buildReceiptPdf({ school, payment, student, items }) {
            .text('[ VOID / CANCELLED ]', 40, dividerY + 35, { align: 'center', width: 515 });
       }
 
-      // ── META INFORMATION (Two Columns) ──
+      // ── META INFORMATION (Two Columns + Photo) ──
+      const studentPhotoBuf = await fetchImageBuffer(student.photo_url);
       let y = payment.is_void ? dividerY + 65 : dividerY + 50;
       doc.rect(40, y - 5, 515, 90).fillAndStroke('#fafafa', '#e0e0e0');
       
@@ -113,12 +127,20 @@ async function buildReceiptPdf({ school, payment, student, items }) {
           doc.font('Helvetica').text(`Bank/Gateway:`, 50, y + 64).font('Helvetica-Bold').text(payment.bank_name, 130, y + 64);
       }
 
-      // Column 2 (Right) - Student Details
-      doc.font('Helvetica').text(`Student Name:`, 310, y).font('Helvetica-Bold').text(student.student_name, 390, y);
-      doc.font('Helvetica').text(`Admission No:`, 310, y + 16).font('Helvetica-Bold').text(student.admission_no || '-', 390, y + 16);
-      doc.font('Helvetica').text(`Class & Sec:`, 310, y + 32).font('Helvetica-Bold').text(`${student.class_name || '-'} ${student.section_name ? '('+student.section_name+')' : ''}`, 390, y + 32);
+      // Column 2 (Right) - Student Details (Shifted slightly left to make room for photo)
+      doc.font('Helvetica').text(`Student Name:`, 290, y).font('Helvetica-Bold').text(student.student_name, 365, y, { width: 115, lineBreak: false });
+      doc.font('Helvetica').text(`Admission No:`, 290, y + 16).font('Helvetica-Bold').text(student.admission_no || '-', 365, y + 16);
+      doc.font('Helvetica').text(`Class & Sec:`, 290, y + 32).font('Helvetica-Bold').text(`${student.class_name || '-'} ${student.section_name ? '('+student.section_name+')' : ''}`, 365, y + 32);
       if (student.roll_no) {
-         doc.font('Helvetica').text(`Roll No:`, 310, y + 48).font('Helvetica-Bold').text(student.roll_no, 390, y + 48);
+         doc.font('Helvetica').text(`Roll No:`, 290, y + 48).font('Helvetica-Bold').text(student.roll_no, 365, y + 48);
+      }
+
+      // Student Profile Photo (Far Right)
+      if (studentPhotoBuf) {
+         try {
+           doc.image(studentPhotoBuf, 490, y, { fit: [50, 50], align: 'center', valign: 'center' });
+           doc.rect(490, y, 50, 50).stroke('#ccc'); // Photo Border
+         } catch (e) {}
       }
 
       // ── TABLE ──
@@ -194,13 +216,13 @@ exports.getOrGenerateReceipt = async (schoolId, paymentId) => {
   if (payment.receipt_url) return payment.receipt_url;
 
   const school = await queryOne(
-    `SELECT name, logo_url, brand_color, address_line1, address_line2, city, state, pincode, phone, email, website
+    `SELECT name, logo_url, watermark_url, brand_color, address_line1, address_line2, city, state, pincode, phone, email, website
      FROM schools WHERE id=@sid`,
     { sid: { type: sql.UniqueIdentifier, value: schoolId } }
   );
 
   const student = await queryOne(
-    `SELECT s.first_name + ' ' + ISNULL(s.last_name,'') AS student_name, s.admission_no,
+    `SELECT s.first_name + ' ' + ISNULL(s.last_name,'') AS student_name, s.admission_no, s.photo_url,
             g.name AS class_name, sc.name AS section_name, e.roll_no
      FROM students s
      LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id=@sid AND e.is_active=1
