@@ -187,7 +187,7 @@ exports.getStudentAccount = async (req, res, next) => {
 // ── 4. POST /api/fees/payments ────────────────────────────────────────────
 exports.recordPayment = async (req, res, next) => {
   try {
-    const { schoolId, id: userId, name: userName } = req.user;
+    const { schoolId, userId, fullName: userName } = req.user;
     const {
       student_id, amount_paise, payment_method,
       transaction_ref, bank_name, payment_date, remarks,
@@ -313,7 +313,7 @@ exports.recordPayment = async (req, res, next) => {
 exports.voidPayment = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { schoolId, id: userId, name: userName } = req.user;
+    const { schoolId, userId, fullName: userName } = req.user;
     const { void_reason } = req.body;
 
     if (!void_reason) return badRequest(res, 'A valid reason is required to void this receipt');
@@ -468,7 +468,7 @@ exports.bulkSaveFeeStructures = async (req, res, next) => {
 // ── POST /api/fees/generate-invoices ────────────────────────────────────
 exports.generateInvoices = async (req, res, next) => {
   try {
-    const { schoolId, id: userId, name: userName } = req.user;
+    const { schoolId, userId, fullName: userName } = req.user;
     const { grade_id, academic_year_id, month_index, title, due_date } = req.body;
     if (!academic_year_id || !title || !due_date) return badRequest(res, 'academic_year_id, title, due_date required');
 
