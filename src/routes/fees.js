@@ -20,7 +20,9 @@ router.get('/structures', feesController.getFeeStructures);
 router.put('/structures/bulk', feesController.bulkSaveFeeStructures);
 router.get('/categories', feesController.listCategories);
 router.post('/categories', feesController.createCategory);
+router.delete('/categories/:id', feesController.deleteCategory);
 router.post('/generate-invoices', feesController.generateInvoices);
+router.get('/payments', feesController.listPayments);
 
 // ── TRANSACTION & WRITE ROUTES (Role-Restricted & Audited) ────────────────
 // Record new fee collection and auto-generate instant receipt
@@ -38,10 +40,6 @@ router.delete(
 );
 
 // Configure / Update class-wise fee heads (Tuition, Transport, Exam, etc.)
-router.post(
-  '/structures',
-  authorize('admin', 'principal'),
-  ctrl.saveFeeStructure
-);
+
 
 module.exports = router;
