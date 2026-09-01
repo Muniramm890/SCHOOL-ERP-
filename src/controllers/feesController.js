@@ -594,4 +594,13 @@ exports.listPayments = async (req, res, next) => {
     return paginated(res, rows.recordset, count?.total || 0, parseInt(page), parseInt(limit));
   } catch (err) { next(err); }
 };
-
+// ── GET /api/fees/payments/:id/receipt ──────────────────────────────────
+exports.getReceipt = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { id } = req.params;
+    const receiptService = require('../services/receiptService');
+    const url = await receiptService.getOrGenerateReceipt(schoolId, id);
+    return success(res, { receipt_url: url }, 'Receipt ready');
+  } catch (err) { next(err); }
+};
