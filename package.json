@@ -1,5 +1,5 @@
 {
-  "name": "school-erp-backend",
+  "name": "school-OFFICE-backend",
   "version": "1.0.0",
   "description": "School ERP Backend - Azure SQL + Node.js",
   "main": "src/server.js",
@@ -23,6 +23,8 @@
     "winston": "^3.11.0",
     "compression": "^1.7.4",
     "razorpay": "^2.9.2",
+    "pdfkit": "^0.15.0",
+     "cloudinary": "^2.5.0",
     "node-cron": "^3.0.3"
   },
   "devDependencies": {
