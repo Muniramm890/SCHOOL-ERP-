@@ -1,4 +1,3 @@
-
 // src/controllers/attendanceController.js
 const { query, queryOne, withTransaction, sql } = require('../config/db');
 const { success, badRequest, notFound } = require('../utils/response');
