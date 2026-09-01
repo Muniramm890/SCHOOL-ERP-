@@ -147,7 +147,7 @@ exports.verifyAndRecord = async (req, res, next) => {
         WHERE id = @aid
       `);
 
-      if (invoice_id) {
+     if (invoice_id) {
         const invReq = tx.request();
         invReq.input('invId', sql.UniqueIdentifier, invoice_id);
         invReq.input('amt', sql.BigInt, amt);
@@ -160,8 +160,29 @@ exports.verifyAndRecord = async (req, res, next) => {
           WHERE id = @invId
         `);
       }
+      
+      // 🔴 NEW: Add Razorpay payment to Dashboard Recent Activity
+      try {
+        const logReq = tx.request();
+        logReq.input('lid', sql.UniqueIdentifier, uuidv4());
+        logReq.input('sid', sql.UniqueIdentifier, schoolId);
+        logReq.input('uid', sql.UniqueIdentifier, userId);
+        logReq.input('unm', sql.NVarChar(200), userName || 'Accountant');
+        logReq.input('act', sql.NVarChar(50), 'FEE_PAID');
+        logReq.input('det', sql.NVarChar(sql.MAX), JSON.stringify({
+          studentName: "Student", // You can fetch real name if needed
+          amount: (amt / 100).toFixed(0),
+          receiptNo: generatedReceipt,
+          paymentMethod: rpPayment.method === 'upi' ? 'UPI' : rpPayment.method === 'card' ? 'Card' : 'Razorpay Online'
+        }));
+        await logReq.query(`
+          INSERT INTO audit_logs (id, school_id, user_id, user_name, action_type, details, created_at)
+          VALUES (@lid, @sid, @uid, @unm, @act, @det, GETUTCDATE())
+        `);
+      } catch (logErr) {
+        console.warn('Audit Logging Warning (Razorpay):', logErr.message);
+      }
+      
     });
 
     return success(res, { id: paymentId, receipt_no: generatedReceipt }, `Payment of ₹${(amount_paise/100).toFixed(2)} verified & recorded`);
-  } catch (err) { next(err); }
-};
