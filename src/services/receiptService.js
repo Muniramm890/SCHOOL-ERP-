@@ -43,39 +43,55 @@ async function buildReceiptPdf({ school, payment, student, items }) {
 
       // School Name & Address
       const textStartX = logoBuf ? 120 : 40;
-      doc.fillColor(brandColor).fontSize(22).font('Helvetica-Bold')
-        .text(school.name?.toUpperCase() || 'SCHOOL NAME', textStartX, headerY, { width: 430 });
+      const maxWidth = logoBuf ? 415 : 515;
+      const schoolName = school.name?.toUpperCase() || 'SCHOOL NAME';
       
+      // Auto-shrink font size to force School Name into a STRICT SINGLE LINE
+      let nameFontSize = 22;
+      doc.font('Helvetica-Bold');
+      while (doc.fontSize(nameFontSize).widthOfString(schoolName) > maxWidth && nameFontSize > 11) {
+          nameFontSize -= 1;
+      }
+      
+      doc.fillColor(brandColor).fontSize(nameFontSize)
+        .text(schoolName, textStartX, headerY, { width: maxWidth, lineBreak: false });
+      
+      // Dynamic Y positioning based on the actual height of the previous text
+      let currentY = doc.y + 6; 
+
       doc.fillColor('#444').fontSize(10).font('Helvetica')
         .text(
           [school.address_line1, school.address_line2, school.city, school.state, school.pincode].filter(Boolean).join(', '),
-          textStartX, headerY + 28, { width: 430 }
+          textStartX, currentY, { width: maxWidth }
         );
       
+      currentY = doc.y + 4; 
+
       doc.fontSize(9).fillColor('#666')
-        .text(
-          `Phone: ${school.phone || 'N/A'}  |  Email: ${school.email || 'N/A'}`,
-          textStartX, headerY + 42, { width: 430 }
-        );
+        .text(`Phone: ${school.phone || 'N/A'}  |  Email: ${school.email || 'N/A'}`, textStartX, currentY, { width: maxWidth });
         
+      currentY = doc.y + 4;
+
       if (school.website) {
-         doc.text(`Website: ${school.website}`, textStartX, headerY + 54, { width: 430 });
+         doc.text(`Website: ${school.website}`, textStartX, currentY, { width: maxWidth });
+         currentY = doc.y + 4;
       }
 
-      // Divider Line
-      doc.moveTo(40, 120).lineTo(555, 120).strokeColor(brandColor).lineWidth(2).stroke();
+      // Divider Line (Pushed down dynamically if address is long)
+      const dividerY = Math.max(120, currentY + 10);
+      doc.moveTo(40, dividerY).lineTo(555, dividerY).strokeColor(brandColor).lineWidth(2).stroke();
 
       // ── TITLE & RECEIPT STATUS ──
       doc.fillColor('#111').fontSize(18).font('Helvetica-Bold')
-        .text('FEE RECEIPT', 40, 135, { align: 'center', width: 515 });
+        .text('FEE RECEIPT', 40, dividerY + 15, { align: 'center', width: 515 });
 
       if (payment.is_void) {
          doc.fillColor('red').fontSize(14).font('Helvetica-Bold')
-           .text('[ VOID / CANCELLED ]', 40, 155, { align: 'center', width: 515 });
+           .text('[ VOID / CANCELLED ]', 40, dividerY + 35, { align: 'center', width: 515 });
       }
 
       // ── META INFORMATION (Two Columns) ──
-      let y = payment.is_void ? 185 : 170;
+      let y = payment.is_void ? dividerY + 65 : dividerY + 50;
       doc.rect(40, y - 5, 515, 90).fillAndStroke('#fafafa', '#e0e0e0');
       
       doc.fontSize(10).fillColor('#333');
