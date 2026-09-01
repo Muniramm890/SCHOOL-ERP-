@@ -24,6 +24,7 @@ router.post('/categories', feesController.createCategory);
 router.delete('/categories/:id', feesController.deleteCategory);
 router.post('/generate-invoices', feesController.generateInvoices);
 router.get('/payments', feesController.listPayments);
+router.get('/payments/:id/receipt', feesController.getReceipt);
 
 // ── TRANSACTION & WRITE ROUTES (Role-Restricted & Audited) ────────────────
 // Record new fee collection and auto-generate instant receipt
