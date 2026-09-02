@@ -33,7 +33,7 @@ async function sendDocument(to, documentUrl, filename, caption) {
     },
     body: JSON.stringify({
       messaging_product: 'whatsapp',
-      to: to.replace(/\D/g, ''),
+      to: (() => { let p = to.replace(/\D/g, ''); return p.length === 10 ? '91' + p : p; })(),
       type: 'document',
       document: { link: documentUrl, filename, caption },
     }),
