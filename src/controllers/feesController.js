@@ -321,6 +321,8 @@ exports.recordPayment = async (req, res, next) => {
       });
     });
 
+       require('../services/receiptService').sendPaymentConfirmationWhatsapp(schoolId, paymentId); // fire & forget
+
     return created(res, { id: paymentId, receipt_no: generatedReceipt }, `Payment of ₹${(amount_paise/100).toFixed(2)} recorded successfully`);
   } catch (err) { next(err); }
 };
