@@ -315,7 +315,7 @@ exports.sendPaymentConfirmationWhatsapp = async (schoolId, paymentId) => {
         ],
       },
     ]);
-  } catch (e) {
-    console.error('WhatsApp confirmation failed:', e.message); // never block payment flow
+    } catch (e) {
+    console.error('❌ WhatsApp confirmation failed:', e.message, e.stack);
   }
 };
