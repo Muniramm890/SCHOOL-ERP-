@@ -40,12 +40,14 @@ exports.createOrder = async (req, res, next) => {
       notes: { student_id, school_id: schoolId, student_name: student.student_name },
     });
 
-    return success(res, {
+       return success(res, {
       order_id: order.id,
       amount: order.amount,
       currency: order.currency,
-      key_id: process.env.RAZORPAY_KEY_ID, // safe to expose — this is the publishable key
+      key_id: process.env.RAZORPAY_KEY_ID,
       student_name: student.student_name,
+      guardian_phone: student.guardian_phone,
+      guardian_email: student.guardian_email,
     }, 'Order created');
   } catch (err) { next(err); }
 };
