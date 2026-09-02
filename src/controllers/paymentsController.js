@@ -21,9 +21,12 @@ exports.createOrder = async (req, res, next) => {
       return badRequest(res, 'Valid student_id and positive amount_paise are required');
     }
 
-    const student = await queryOne(
-      `SELECT id, first_name + ' ' + ISNULL(last_name,'') AS student_name
-       FROM students WHERE id=@uid AND school_id=@sid AND deleted_at IS NULL`,
+       const student = await queryOne(
+      `SELECT s.id, s.first_name + ' ' + ISNULL(s.last_name,'') AS student_name,
+              sg.phone AS guardian_phone, sg.email AS guardian_email
+       FROM students s
+       LEFT JOIN student_guardians sg ON sg.student_id = s.id AND sg.is_primary=1 AND sg.deleted_at IS NULL
+       WHERE s.id=@uid AND s.school_id=@sid AND s.deleted_at IS NULL`,
       { uid: { type: sql.UniqueIdentifier, value: student_id },
         sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
