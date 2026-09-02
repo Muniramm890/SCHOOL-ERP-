@@ -184,7 +184,8 @@ exports.verifyAndRecord = async (req, res, next) => {
       }
       
     });
+    
+       require('../services/receiptService').sendPaymentConfirmationWhatsapp(schoolId, paymentId); // fire & forget
 
     return success(res, { id: paymentId, receipt_no: generatedReceipt }, `Payment of ₹${(amount_paise/100).toFixed(2)} verified & recorded`);
-  } catch (err) { next(err); }
 };
