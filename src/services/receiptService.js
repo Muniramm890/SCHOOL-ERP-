@@ -275,47 +275,82 @@ exports.getOrGenerateReceipt = async (schoolId, paymentId) => {
 
 exports.sendPaymentConfirmationWhatsapp = async (schoolId, paymentId) => {
   try {
-    const whatsappService = require('./whatsappService');
+    const { sendTemplate } = require('./whatsappService');
+    const { queryOne, sql } = require('../config/db');
 
+    // 1. Fetch Payment Data
     const payment = await queryOne(
-      `SELECT fp.receipt_no, fp.amount_paise, fp.payment_method, fp.transaction_ref, fp.student_id,
-              s.first_name + ' ' + ISNULL(s.last_name,'') AS student_name
-       FROM fee_payments fp
-       JOIN students s ON s.id = fp.student_id
-       WHERE fp.id=@id AND fp.school_id=@sid`,
+      `SELECT * FROM fee_payments WHERE id=@id AND school_id=@sid`,
       { id: { type: sql.UniqueIdentifier, value: paymentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
     if (!payment) return;
 
-    const guardian = await queryOne(
-      `SELECT TOP 1 phone FROM student_guardians
-       WHERE student_id=@uid AND is_primary=1 AND deleted_at IS NULL`,
+    // 2. Fetch School Data
+    const school = await queryOne(
+      `SELECT name FROM schools WHERE id=@sid`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+
+    // 3. Fetch Student & Parent Phone
+    const student = await queryOne(
+      `SELECT s.first_name, s.last_name, s.phone AS student_phone,
+        (SELECT TOP 1 phone FROM student_guardians WHERE student_id = s.id AND is_primary = 1) AS guardian_phone
+       FROM students s WHERE s.id=@uid`,
       { uid: { type: sql.UniqueIdentifier, value: payment.student_id } }
     );
-    if (!guardian?.phone) return;
 
-    const school = await queryOne(`SELECT name FROM schools WHERE id=@sid`,
-      { sid: { type: sql.UniqueIdentifier, value: schoolId } });
+    if (!student) return;
+    
+    // Guardian ka number pehle try karenge, warna student ka
+    const targetPhone = student.guardian_phone || student.student_phone;
+    if (!targetPhone) {
+      console.log("❌ No phone number found for WhatsApp");
+      return;
+    }
 
-    const timeStr = new Date().toLocaleString('en-IN', {
-      day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
-    });
+    // 4. Format Variables (Strict limit applied to prevent Meta Error #132005)
+    const schoolName = String(school?.name || "School").substring(0, 60);
+    const studentName = [student.first_name, student.last_name].filter(Boolean).join(" ").substring(0, 30);
+    const amount = (payment.amount_paise / 100).toString();
 
-    await whatsappService.sendTemplate(guardian.phone, 'fee_submission_confirmation', 'en', [
-      { type: 'header', parameters: [{ type: 'text', text: school.name }] },
+    // Formatting Date to Month (e.g. "September 2026")
+    const dateObj = new Date(payment.payment_date || Date.now());
+    const month = dateObj.toLocaleString('en-IN', { month: 'long', year: 'numeric' }).substring(0, 20);
+    
+    // Transaction ID & Mode
+    const trxId = String(payment.razorpay_payment_id || payment.transaction_ref || "CASH").substring(0, 30);
+    const mode = String(payment.payment_method || "CASH").substring(0, 20);
+
+    // Time string format: "02 September 2026, 10:25 AM"
+    const timeOptions = { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' };
+    const timeStr = dateObj.toLocaleString('en-IN', timeOptions).replace(' am', ' AM').replace(' pm', ' PM');
+
+    // 🔴 5. Build EXACT Meta Payload (Matches your GAS Script: 1 Header, 6 Body)
+    const components = [
       {
-        type: 'body',
+        type: "header",
         parameters: [
-          { type: 'text', text: payment.student_name },
-          { type: 'text', text: String((payment.amount_paise / 100).toFixed(0)) },
-          { type: 'text', text: new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' }) },
-          { type: 'text', text: String(payment.transaction_ref || 'CASH') },
-          { type: 'text', text: payment.payment_method },
-          { type: 'text', text: timeStr },
-        ],
+          { type: "text", text: schoolName } // Header {{1}}
+        ]
       },
-    ]);
-    } catch (e) {
-    console.error('❌ WhatsApp confirmation failed:', e.message, e.stack);
+      {
+        type: "body",
+        parameters: [
+          { type: "text", text: studentName },  // Body {{1}}
+          { type: "text", text: amount },       // Body {{2}}
+          { type: "text", text: month },        // Body {{3}}
+          { type: "text", text: trxId },        // Body {{4}}
+          { type: "text", text: mode },         // Body {{5}}
+          { type: "text", text: timeStr }       // Body {{6}}
+        ]
+      }
+    ];
+
+    // 6. Send using Node.js WhatsApp Service
+    await sendTemplate(targetPhone, 'fee_submission_confirmation', 'en', components);
+    console.log("✅ Fee WhatsApp Sent to: " + targetPhone);
+
+  } catch (error) {
+    console.error("❌ WhatsApp Error:", error.message);
   }
 };
