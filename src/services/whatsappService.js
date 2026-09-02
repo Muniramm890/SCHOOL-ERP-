@@ -1,5 +1,5 @@
 //src/services/whatsappService.js
-const WHATSAPP_API = `https://graph.facebook.com/v19.0/${process.env.PHONE_ID}/messages`;
+const WHATSAPP_API = `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_ID}/messages`;
 
 async function sendTemplate(to, templateName, languageCode, components) {
   const res = await fetch(WHATSAPP_API, {
