@@ -292,17 +292,16 @@ exports.sendPaymentConfirmationWhatsapp = async (schoolId, paymentId) => {
     );
 
     // 3. Fetch Student & Parent Phone
-    const student = await queryOne(
-      `SELECT s.first_name, s.last_name, s.phone AS student_phone,
+        const student = await queryOne(
+      `SELECT s.first_name, s.last_name,
         (SELECT TOP 1 phone FROM student_guardians WHERE student_id = s.id AND is_primary = 1) AS guardian_phone
        FROM students s WHERE s.id=@uid`,
       { uid: { type: sql.UniqueIdentifier, value: payment.student_id } }
     );
 
     if (!student) return;
-    
-    // Guardian ka number pehle try karenge, warna student ka
-    const targetPhone = student.guardian_phone || student.student_phone;
+
+    const targetPhone = student.guardian_phone;
     if (!targetPhone) {
       console.log("❌ No phone number found for WhatsApp");
       return;
