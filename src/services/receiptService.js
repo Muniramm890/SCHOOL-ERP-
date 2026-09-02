@@ -354,3 +354,105 @@ exports.sendPaymentConfirmationWhatsapp = async (schoolId, paymentId) => {
     console.error("❌ WhatsApp Error:", error.message);
   }
 };
+
+exports.sendPaymentConfirmationEmail = async (schoolId, paymentId) => {
+  try {
+    const emailService = require('./emailService');
+
+    const payment = await queryOne(
+      `SELECT fp.receipt_no, fp.amount_paise, fp.payment_method, fp.payment_date, fp.student_id
+       FROM fee_payments fp WHERE fp.id=@id AND fp.school_id=@sid`,
+      { id: { type: sql.UniqueIdentifier, value: paymentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+    if (!payment) return;
+
+    const student = await queryOne(
+      `SELECT s.first_name + ' ' + ISNULL(s.last_name,'') AS student_name, s.photo_url,
+              g.name AS class_name, sc.name AS section_name
+       FROM students s
+       LEFT JOIN enrolments e ON e.student_id=s.id AND e.school_id=@sid AND e.is_active=1
+       LEFT JOIN sections sc ON sc.id=e.section_id
+       LEFT JOIN grades g ON g.id=sc.grade_id
+       WHERE s.id=@uid AND s.school_id=@sid`,
+      { uid: { type: sql.UniqueIdentifier, value: payment.student_id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+
+    const guardian = await queryOne(
+      `SELECT TOP 1 email, full_name FROM student_guardians
+       WHERE student_id=@uid AND is_primary=1 AND deleted_at IS NULL AND email IS NOT NULL`,
+      { uid: { type: sql.UniqueIdentifier, value: payment.student_id } }
+    );
+    if (!guardian?.email) return;
+
+    const school = await queryOne(
+      `SELECT name, logo_url, brand_color, address_line1, city, state, phone, email
+       FROM schools WHERE id=@sid`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+
+    const brandColor = school.brand_color || '#E8600A';
+    const receiptUrl = await exports.getOrGenerateReceipt(schoolId, paymentId);
+
+    const html = `
+    <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:600px;margin:0 auto;background:#f4f4f7;padding:24px;">
+      <div style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,0.06);">
+        <div style="background:${brandColor};padding:24px 28px;display:flex;align-items:center;gap:14px;">
+          ${school.logo_url ? `<img src="${school.logo_url}" width="48" height="48" style="border-radius:8px;background:#fff;padding:4px;" />` : ''}
+          <div>
+            <div style="color:#fff;font-size:18px;font-weight:800;">${school.name}</div>
+            <div style="color:#ffffffcc;font-size:11px;">${[school.address_line1, school.city, school.state].filter(Boolean).join(', ')}</div>
+          </div>
+        </div>
+
+        <div style="padding:28px;">
+          <div style="text-align:center;margin-bottom:20px;">
+            ${student.photo_url ? `<img src="${student.photo_url}" width="64" height="64" style="border-radius:50%;object-fit:cover;border:3px solid ${brandColor}44;" />` : ''}
+            <h2 style="margin:12px 0 2px;color:#111;">${student.student_name}</h2>
+            <div style="color:#777;font-size:13px;">${student.class_name || ''} ${student.section_name || ''}</div>
+          </div>
+
+          <div style="background:#f9fafb;border-radius:12px;padding:18px 20px;margin-bottom:20px;">
+            <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee;">
+              <span style="color:#666;font-size:13px;">Receipt No.</span>
+              <span style="font-weight:700;font-size:13px;">${payment.receipt_no}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee;">
+              <span style="color:#666;font-size:13px;">Payment Date</span>
+              <span style="font-weight:700;font-size:13px;">${new Date(payment.payment_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding:6px 0;">
+              <span style="color:#666;font-size:13px;">Payment Method</span>
+              <span style="font-weight:700;font-size:13px;">${payment.payment_method}</span>
+            </div>
+          </div>
+
+          <div style="text-align:center;background:${brandColor}11;border-radius:12px;padding:18px;margin-bottom:22px;">
+            <div style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:0.5px;">Amount Paid</div>
+            <div style="font-size:28px;font-weight:800;color:${brandColor};margin-top:4px;">₹${(payment.amount_paise / 100).toLocaleString('en-IN')}</div>
+          </div>
+
+          <div style="text-align:center;">
+            <a href="${receiptUrl}" style="display:inline-block;background:${brandColor};color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:700;font-size:13px;">
+              Download Receipt PDF
+            </a>
+          </div>
+        </div>
+
+        <div style="background:#fafafa;padding:16px 28px;text-align:center;border-top:1px solid #eee;">
+          <div style="font-size:10.5px;color:#999;">This is a computer-generated email. Please do not reply.</div>
+          <div style="font-size:11px;color:#aaa;margin-top:4px;">${school.name} · ${school.phone || ''} ${school.email ? '· ' + school.email : ''}</div>
+        </div>
+      </div>
+    </div>`;
+
+    await emailService.sendHtmlEmail({
+      to: guardian.email,
+      from: school.email || 'noreply@schoolerp.app',
+      fromName: school.name,
+      subject: `Fee Payment Confirmation — ${payment.receipt_no}`,
+      html,
+    });
+  } catch (e) {
+    console.error('❌ Payment confirmation email failed:', e.message, e.stack);
+  }
+};
