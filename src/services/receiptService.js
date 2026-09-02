@@ -192,10 +192,16 @@ async function buildReceiptPdf({ school, payment, student, items }) {
   });
 }
 
-function uploadPdfBuffer(buffer, publicId) {
+function uploadPdfBuffer(buffer, folderPath, publicId) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
-      { resource_type: 'raw', folder: 'fee_receipts', public_id: publicId, format: 'pdf', overwrite: true },
+      { 
+        resource_type: 'image', 
+        folder: folderPath,     
+        public_id: publicId, 
+        format: 'pdf', 
+        overwrite: true 
+      },
       (err, result) => (err ? reject(err) : resolve(result))
     );
     stream.end(buffer);
@@ -245,7 +251,18 @@ exports.getOrGenerateReceipt = async (schoolId, paymentId) => {
   }
 
   const pdfBuffer = await buildReceiptPdf({ school, payment, student, items });
-  const uploadResult = await uploadPdfBuffer(pdfBuffer, `receipt_${payment.receipt_no}_${payment.id}`);
+  
+  // 🔴 NEW: Generate safe folder name based on School Name
+  const safeSchoolName = (school.name || 'Unknown_School')
+     .replace(/[^a-zA-Z0-9]/g, '_')
+     .replace(/_+/g, '_')
+     .toLowerCase();
+     
+  const folderPath = `${safeSchoolName}/fee_receipts`;
+  const fileName = `receipt_${payment.receipt_no}_${payment.id}`;
+
+  // 🔴 FIX: Passing buffer, folderPath, AND fileName
+  const uploadResult = await uploadPdfBuffer(pdfBuffer, folderPath, fileName);
   const url = uploadResult.secure_url;
 
   await query(
