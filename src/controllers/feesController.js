@@ -2,6 +2,7 @@
 const { query, queryOne, withTransaction, sql } = require('../config/db');
 const { success, created, notFound, badRequest, paginated } = require('../utils/response');
 const { v4: uuidv4 } = require('uuid');
+const rs = require('../services/receiptService');
 
 // ── AUDIT LOGGER HELPER ───────────────────────────────────────────────────
 const logAudit = async (tx, { schoolId, userId, userName, actionType, details }) => {
@@ -321,7 +322,9 @@ exports.recordPayment = async (req, res, next) => {
       });
     });
 
-       require('../services/receiptService').sendPaymentConfirmationWhatsapp(schoolId, paymentId); // fire & forget
+       
+    rs.sendPaymentConfirmationWhatsapp(schoolId, paymentId);
+    rs.sendPaymentConfirmationEmail(schoolId, paymentId);
 
     return created(res, { id: paymentId, receipt_no: generatedReceipt }, `Payment of ₹${(amount_paise/100).toFixed(2)} recorded successfully`);
   } catch (err) { next(err); }
