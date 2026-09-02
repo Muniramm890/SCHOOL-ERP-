@@ -272,3 +272,50 @@ exports.getOrGenerateReceipt = async (schoolId, paymentId) => {
 
   return url;
 };
+
+exports.sendPaymentConfirmationWhatsapp = async (schoolId, paymentId) => {
+  try {
+    const whatsappService = require('./whatsappService');
+
+    const payment = await queryOne(
+      `SELECT fp.receipt_no, fp.amount_paise, fp.payment_method, fp.transaction_ref, fp.student_id,
+              s.first_name + ' ' + ISNULL(s.last_name,'') AS student_name
+       FROM fee_payments fp
+       JOIN students s ON s.id = fp.student_id
+       WHERE fp.id=@id AND fp.school_id=@sid`,
+      { id: { type: sql.UniqueIdentifier, value: paymentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+    if (!payment) return;
+
+    const guardian = await queryOne(
+      `SELECT TOP 1 phone FROM student_guardians
+       WHERE student_id=@uid AND is_primary=1 AND deleted_at IS NULL`,
+      { uid: { type: sql.UniqueIdentifier, value: payment.student_id } }
+    );
+    if (!guardian?.phone) return;
+
+    const school = await queryOne(`SELECT name FROM schools WHERE id=@sid`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId } });
+
+    const timeStr = new Date().toLocaleString('en-IN', {
+      day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
+    });
+
+    await whatsappService.sendTemplate(guardian.phone, 'fee_submission_confirmation', 'en', [
+      { type: 'header', parameters: [{ type: 'text', text: school.name }] },
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: payment.student_name },
+          { type: 'text', text: String((payment.amount_paise / 100).toFixed(0)) },
+          { type: 'text', text: new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' }) },
+          { type: 'text', text: String(payment.transaction_ref || 'CASH') },
+          { type: 'text', text: payment.payment_method },
+          { type: 'text', text: timeStr },
+        ],
+      },
+    ]);
+  } catch (e) {
+    console.error('WhatsApp confirmation failed:', e.message); // never block payment flow
+  }
+};
