@@ -262,8 +262,13 @@ exports.updateSchool = async (req, res, next) => {
         let val = req.body[f] === '' ? null : req.body[f];
         
         // 🔥 FIX: Securely casting React's Time String to SQL TIME
+      
         if (val !== null && (f === 'school_start_time' || f === 'school_end_time')) {
-          if (val.length === 5) val = `${val}:00`; 
+          val = String(val).trim();
+          if (!/^\d{2}:\d{2}(:\d{2})?$/.test(val)) {
+            continue; // skip invalid/garbage time values instead of crashing
+          }
+          if (val.length === 5) val = `${val}:00`;
           sets.push(`${f} = CAST(@${f} AS TIME)`);
           params[f] = { type: sql.VarChar(15), value: val };
         } else {
