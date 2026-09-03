@@ -2,6 +2,8 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/setupController');
 const { authenticate, authorize } = require('../middleware/auth');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 // Saare routes authenticated hone chahiye
 router.use(authenticate);
@@ -9,6 +11,7 @@ router.use(authenticate);
 // ── School Profile Routes ────────────────────────────────────────────────
 router.get('/school', ctrl.getSchool);
 router.put('/school', authorize('school_admin'), ctrl.updateSchool);
+router.post('/school/upload-asset', upload.single('file'), ctrl.uploadSchoolAsset);
 
 // ── Grades (Classes) Routes ──────────────────────────────────────────────
 router.get('/grades', ctrl.listGrades);
