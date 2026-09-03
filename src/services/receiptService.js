@@ -196,10 +196,9 @@ function uploadPdfBuffer(buffer, folderPath, publicId) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       { 
-        resource_type: 'image', 
+        resource_type: 'raw', 
         folder: folderPath,     
-        public_id: publicId, 
-        format: 'pdf', 
+        public_id: `${publicId}.pdf`, 
         overwrite: true 
       },
       (err, result) => (err ? reject(err) : resolve(result))
