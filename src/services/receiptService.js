@@ -356,6 +356,7 @@ exports.sendPaymentConfirmationWhatsapp = async (schoolId, paymentId) => {
 
 exports.sendPaymentConfirmationEmail = async (schoolId, paymentId) => {
   try {
+    console.log('📧 Email flow started for payment:', paymentId);
     const emailService = require('./emailService');
 
     const payment = await queryOne(
@@ -381,7 +382,7 @@ exports.sendPaymentConfirmationEmail = async (schoolId, paymentId) => {
        WHERE student_id=@uid AND is_primary=1 AND deleted_at IS NULL AND email IS NOT NULL`,
       { uid: { type: sql.UniqueIdentifier, value: payment.student_id } }
     );
-    if (!guardian?.email) return;
+        if (!guardian?.email) { console.log('❌ No guardian email found for student:', payment.student_id); return; }
 
     const school = await queryOne(
       `SELECT name, logo_url, brand_color, address_line1, city, state, phone, email
@@ -444,13 +445,14 @@ exports.sendPaymentConfirmationEmail = async (schoolId, paymentId) => {
       </div>
     </div>`;
 
-    await emailService.sendHtmlEmail({
+        await emailService.sendHtmlEmail({
       to: guardian.email,
-      from: school.email || 'noreply@schoolerp.app',
+      from: 'muniramm890@gmail.com',
       fromName: school.name,
       subject: `Fee Payment Confirmation — ${payment.receipt_no}`,
       html,
     });
+    console.log('✅ Email sent successfully to:', guardian.email);
   } catch (e) {
     console.error('❌ Payment confirmation email failed:', e.message, e.stack);
   }
