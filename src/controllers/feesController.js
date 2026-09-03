@@ -177,11 +177,22 @@ exports.getStudentAccount = async (req, res, next) => {
     );
     if (!student) return notFound(res, 'Student not found');
 
-    const [invoices, payments] = await Promise.all([
+    const [invoices, payments, pending_items] = await Promise.all([
       query(
         `SELECT fi.* FROM fee_invoices fi
          WHERE fi.student_id = @uid AND fi.school_id = @sid AND fi.deleted_at IS NULL
          ORDER BY fi.due_date DESC`,
+        { uid: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+      ),
+      // NEW: Fetch Category-wise breakdown for active invoices
+      query(
+        `SELECT fii.invoice_id, fii.fee_category_id, fc.name AS category_name, 
+                fii.amount_paise, fii.paid_paise, fii.discount_paise,
+                (fii.amount_paise - fii.paid_paise - fii.discount_paise) AS pending_paise
+         FROM fee_invoice_items fii
+         JOIN fee_categories fc ON fc.id = fii.fee_category_id
+         JOIN fee_invoices fi ON fi.id = fii.invoice_id
+         WHERE fi.student_id = @uid AND fi.school_id = @sid AND fi.status != 'paid' AND fi.deleted_at IS NULL`,
         { uid: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
       ),
       query(
@@ -196,6 +207,7 @@ exports.getStudentAccount = async (req, res, next) => {
     return success(res, {
       account: student,
       invoices: invoices?.recordset || [],
+      pending_items: pending_items?.recordset || [],
       payments: payments?.recordset || []
     }, 'Student financial records fetched');
   } catch (err) { next(err); }
@@ -208,8 +220,13 @@ exports.recordPayment = async (req, res, next) => {
     const {
       student_id, amount_paise, payment_method,
       transaction_ref, bank_name, payment_date, remarks,
-      invoice_id
+      invoice_id, breakdown // NEW: [{ category_id, pay_amount, discount_amount }]
     } = req.body;
+    
+    // Calculate total discount from breakdown array
+    const total_discount = (breakdown && Array.isArray(breakdown)) 
+      ? breakdown.reduce((sum, item) => sum + (Number(item.discount_amount) || 0), 0)
+      : 0;
 
     if (!student_id || !amount_paise || amount_paise <= 0) {
       return badRequest(res, 'Valid student_id and positive amount_paise are required');
@@ -292,16 +309,50 @@ exports.recordPayment = async (req, res, next) => {
         WHERE id = @aid
       `);
 
-      // 5. Update Invoice if linked
+     // 5. Insert Itemized Breakdown & Update Invoice Items
+      if (breakdown && Array.isArray(breakdown) && breakdown.length > 0) {
+        for (const item of breakdown) {
+          const itReq = tx.request();
+          itReq.input('sid', sql.UniqueIdentifier, schoolId);
+          itReq.input('pid', sql.UniqueIdentifier, paymentId);
+          itReq.input('cid', sql.UniqueIdentifier, item.category_id);
+          itReq.input('pAmt', sql.BigInt, Number(item.pay_amount) || 0);
+          itReq.input('dAmt', sql.BigInt, Number(item.discount_amount) || 0);
+          
+          // Insert into new table
+          await itReq.query(`
+            INSERT INTO fee_payment_items (school_id, payment_id, fee_category_id, amount_paise, discount_paise)
+            VALUES (@sid, @pid, @cid, @pAmt, @dAmt)
+          `);
+
+          // Update specific item balances if linked to an invoice
+          if (invoice_id) {
+            const iItReq = tx.request();
+            iItReq.input('invId', sql.UniqueIdentifier, invoice_id);
+            iItReq.input('cid', sql.UniqueIdentifier, item.category_id);
+            iItReq.input('pAmt', sql.BigInt, Number(item.pay_amount) || 0);
+            iItReq.input('dAmt', sql.BigInt, Number(item.discount_amount) || 0);
+            await iItReq.query(`
+              UPDATE fee_invoice_items 
+              SET paid_paise = paid_paise + @pAmt, discount_paise = discount_paise + @dAmt
+              WHERE invoice_id = @invId AND fee_category_id = @cid
+            `);
+          }
+        }
+      }
+
+      // 5.5 Update Main Invoice Total Balances
       if (invoice_id) {
         const invReq = tx.request();
         invReq.input('invId', sql.UniqueIdentifier, invoice_id);
         invReq.input('amt', sql.BigInt, amount_paise);
+        invReq.input('dsc', sql.BigInt, total_discount);
         await invReq.query(`
           UPDATE fee_invoices
           SET paid_paise = paid_paise + @amt,
-              balance_paise = CASE WHEN total_paise - discount_paise - paid_paise - @amt < 0 THEN 0 ELSE total_paise - discount_paise - paid_paise - @amt END,
-              status = CASE WHEN total_paise - discount_paise <= paid_paise + @amt THEN 'paid' ELSE 'partial' END,
+              discount_paise = discount_paise + @dsc,
+              balance_paise = CASE WHEN total_paise - (discount_paise + @dsc) - (paid_paise + @amt) < 0 THEN 0 ELSE total_paise - (discount_paise + @dsc) - (paid_paise + @amt) END,
+              status = CASE WHEN total_paise - (discount_paise + @dsc) <= (paid_paise + @amt) THEN 'paid' ELSE 'partial' END,
               updated_at = GETUTCDATE()
           WHERE id = @invId
         `);
@@ -370,15 +421,35 @@ exports.voidPayment = async (req, res, next) => {
         WHERE id = @aid
       `);
 
-      // 3. Reverse Invoice if linked
+     
+      // 3. Reverse Itemized Invoice Balances & Main Invoice
       if (payment.invoice_id) {
-        const invReq = tx.request();
-        invReq.input('invId', sql.UniqueIdentifier, payment.invoice_id);
-        invReq.input('amt', sql.BigInt, payment.amount_paise);
-        await invReq.query(`
+        const revReq = tx.request();
+        revReq.input('invId', sql.UniqueIdentifier, payment.invoice_id);
+        revReq.input('pid', sql.UniqueIdentifier, payment.id);
+        
+        // a) Restore category specific balances
+        await revReq.query(`
+          UPDATE fii
+          SET fii.paid_paise = CASE WHEN fii.paid_paise - fpi.amount_paise < 0 THEN 0 ELSE fii.paid_paise - fpi.amount_paise END,
+              fii.discount_paise = CASE WHEN fii.discount_paise - fpi.discount_paise < 0 THEN 0 ELSE fii.discount_paise - fpi.discount_paise END
+          FROM fee_invoice_items fii
+          JOIN fee_payment_items fpi ON fpi.fee_category_id = fii.fee_category_id
+          WHERE fii.invoice_id = @invId AND fpi.payment_id = @pid
+        `);
+
+        // b) Fetch total discount applied in this payment to reverse it
+        const dRes = await revReq.query(`SELECT ISNULL(SUM(discount_paise), 0) AS total_dsc FROM fee_payment_items WHERE payment_id = @pid`);
+        const voidDiscount = dRes.recordset[0].total_dsc;
+
+        // c) Restore Main Invoice Balance
+        revReq.input('amt', sql.BigInt, payment.amount_paise);
+        revReq.input('dsc', sql.BigInt, voidDiscount);
+        await revReq.query(`
           UPDATE fee_invoices
           SET paid_paise = CASE WHEN paid_paise - @amt < 0 THEN 0 ELSE paid_paise - @amt END,
-              balance_paise = balance_paise + @amt,
+              discount_paise = CASE WHEN discount_paise - @dsc < 0 THEN 0 ELSE discount_paise - @dsc END,
+              balance_paise = balance_paise + @amt + @dsc,
               status = 'partial',
               updated_at = GETUTCDATE()
           WHERE id = @invId
@@ -600,6 +671,7 @@ exports.listPayments = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 // ── GET /api/fees/payments/:id/receipt ──────────────────────────────────
+
 exports.getReceipt = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
