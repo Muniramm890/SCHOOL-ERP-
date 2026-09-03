@@ -54,39 +54,43 @@ async function buildReceiptPdf({ school, payment, student, items }) {
         try { doc.image(logoBuf, 40, headerY, { fit: [70, 70] }); } catch {}
       }
 
-      const textStartX = logoBuf ? 120 : 40;
-      const maxWidth = logoBuf ? 435 : 515;
-      const schoolName = school.name?.toUpperCase() || 'SCHOOL NAME';
+     const schoolName = school.name?.toUpperCase() || 'SCHOOL NAME';
+      const pageWidth = 515; // Full printable width (A4 595 - 40 left margin - 40 right margin)
 
-      // Auto-shrink font size to force single line
+      // MATH MAGIC: To keep text 100% centered, it must span the full page width (x: 40).
+      // But if a logo exists (max width 70px + margin), the safe text width is smaller so it doesn't overlap the logo.
+      // Left limit is x=115. Center is x=297.5. Safe width = (297.5 - 115) * 2 = 365.
+      const maxSafeTextWidth = logoBuf ? 365 : 515;
+
+      // Auto-shrink font size to force single line and avoid logo overlap
       let nameFontSize = 24;
       doc.font('Helvetica-Bold');
-      while (doc.fontSize(nameFontSize).widthOfString(schoolName) > maxWidth && nameFontSize > 12) {
+      while (doc.fontSize(nameFontSize).widthOfString(schoolName) > maxSafeTextWidth && nameFontSize > 9) {
           nameFontSize -= 1;
       }
 
-      // Centered Title
+      // Title (100% centered on paper, lineBreak false ensures 1 line)
       doc.fillColor(brandColor).fontSize(nameFontSize)
-        .text(schoolName, textStartX, headerY, { width: maxWidth, align: 'center', lineBreak: false });
+        .text(schoolName, 40, headerY, { width: pageWidth, align: 'center', lineBreak: false });
 
-      // Dynamically smaller Address & perfectly centered
+      // Address Setup
       let currentY = doc.y + 4;
       const address = [school.address_line1, school.address_line2, school.city, school.state, school.pincode].filter(Boolean).join(', ');
       
-      let addrFontSize = Math.min(10, nameFontSize - 8);
+      let addrFontSize = Math.min(10, nameFontSize - 4);
       if (addrFontSize < 8) addrFontSize = 8;
 
       doc.fillColor('#444').fontSize(addrFontSize).font('Helvetica')
-        .text(address, textStartX, currentY, { width: maxWidth, align: 'center' });
+        .text(address, 40, currentY, { width: pageWidth, align: 'center' });
 
-      // Phone & Email Centered
+      // Phone & Email 
       currentY = doc.y + 3;
       doc.fontSize(addrFontSize - 1).fillColor('#666')
-        .text(`Phone: ${school.phone || 'N/A'}  |  Email: ${school.email || 'N/A'}`, textStartX, currentY, { width: maxWidth, align: 'center' });
+        .text(`Phone: ${school.phone || 'N/A'}  |  Email: ${school.email || 'N/A'}`, 40, currentY, { width: pageWidth, align: 'center' });
         
       currentY = doc.y + 3;
       if (school.website) {
-         doc.text(`Website: ${school.website}`, textStartX, currentY, { width: maxWidth, align: 'center' });
+         doc.text(`Website: ${school.website}`, 40, currentY, { width: pageWidth, align: 'center' });
          currentY = doc.y + 4;
       }
 
@@ -159,7 +163,16 @@ async function buildReceiptPdf({ school, payment, student, items }) {
         const rowH = 26;
         if (i % 2 === 1) { doc.rect(40, y, 515, rowH).fill('#f9f9f9'); doc.fillColor('#222'); }
         doc.text((i + 1).toString(), 50, y + 8, { width: 40 });
-        doc.text(it.category_name, 100, y + 8);
+        
+        // If there's a discount on this item, print it below the category name
+        if (it.discount_paise && it.discount_paise > 0) {
+            doc.text(it.category_name, 100, y + 4);
+            doc.fontSize(8).fillColor('#e63946').text(`Includes Discount: -${money(it.discount_paise)}`, 100, y + 15);
+            doc.fontSize(10).fillColor('#222'); // Reset for next items
+        } else {
+            doc.text(it.category_name, 100, y + 8);
+        }
+
         doc.text(money(it.amount_paise), 480, y + 8, { width: 65, align: 'right' });
         y += rowH;
       });
@@ -237,17 +250,16 @@ exports.getOrGenerateReceipt = async (schoolId, paymentId) => {
     { uid: { type: sql.UniqueIdentifier, value: payment.student_id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
   );
 
+ // Fetch Itemized Breakdown for this specific payment
   let items = [];
-  if (payment.invoice_id) {
-    const itemsRes = await query(
-      `SELECT fc.name AS category_name, ii.amount_paise
-       FROM fee_invoice_items ii
-       JOIN fee_categories fc ON fc.id = ii.fee_category_id
-       WHERE ii.invoice_id = @iid`,
-      { iid: { type: sql.UniqueIdentifier, value: payment.invoice_id } }
-    );
-    items = itemsRes.recordset;
-  }
+  const itemsRes = await query(
+    `SELECT fc.name AS category_name, fpi.amount_paise, fpi.discount_paise
+     FROM fee_payment_items fpi
+     JOIN fee_categories fc ON fc.id = fpi.fee_category_id
+     WHERE fpi.payment_id = @pid AND fpi.amount_paise > 0`,
+    { pid: { type: sql.UniqueIdentifier, value: paymentId } }
+  );
+  items = itemsRes.recordset || [];
 
   const pdfBuffer = await buildReceiptPdf({ school, payment, student, items });
   
