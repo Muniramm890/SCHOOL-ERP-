@@ -15,13 +15,24 @@ const razorpay = new Razorpay({
 exports.createOrder = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
-    const { student_id, amount_paise } = req.body;
+    
+    // 🔴 NEW: Payload mein breakdown array bhi aayega
+    const { student_id, amount_paise, breakdown } = req.body;
 
     if (!student_id || !amount_paise || amount_paise <= 0) {
       return badRequest(res, 'Valid student_id and positive amount_paise are required');
     }
 
-       const student = await queryOne(
+    // 🔴 STRICT SECURITY CHECK: Itemized validation
+    // Ensure frontend tampering hasn't happened. Total requested amount MUST equal the sum of itemized breakdown.
+    if (breakdown && Array.isArray(breakdown)) {
+      const calculatedTotal = breakdown.reduce((sum, item) => sum + (Number(item.pay_amount) || 0), 0);
+      if (calculatedTotal !== amount_paise) {
+        return badRequest(res, 'Security Error: Itemized breakdown total does not match the requested order amount.');
+      }
+    }
+
+    const student = await queryOne(
       `SELECT s.id, s.first_name + ' ' + ISNULL(s.last_name,'') AS student_name,
               sg.phone AS guardian_phone, sg.email AS guardian_email
        FROM students s
@@ -37,10 +48,16 @@ exports.createOrder = async (req, res, next) => {
       amount: amount_paise, // razorpay expects smallest currency unit = paise, matches our schema exactly
       currency: 'INR',
       receipt,
-      notes: { student_id, school_id: schoolId, student_name: student.student_name },
+      notes: { 
+        student_id, 
+        school_id: schoolId, 
+        student_name: student.student_name,
+        // 🔴 NEW: Audit tracking on Razorpay Dashboard
+        is_itemized: (breakdown && breakdown.length > 0) ? 'yes' : 'no' 
+      },
     });
 
-       return success(res, {
+    return success(res, {
       order_id: order.id,
       amount: order.amount,
       currency: order.currency,
@@ -53,12 +70,13 @@ exports.createOrder = async (req, res, next) => {
 };
 
 // ── POST /api/payments/razorpay/verify ─────────────────────────────────────
+// ── POST /api/payments/razorpay/verify ─────────────────────────────────────
 exports.verifyAndRecord = async (req, res, next) => {
   try {
     const { schoolId, userId, fullName: userName } = req.user;
     const {
       razorpay_order_id, razorpay_payment_id, razorpay_signature,
-      student_id, amount_paise, invoice_id, remarks,
+      student_id, amount_paise, invoice_id, remarks, breakdown // 🔴 NEW: Added breakdown array
     } = req.body;
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
@@ -84,10 +102,16 @@ exports.verifyAndRecord = async (req, res, next) => {
       return badRequest(res, 'Order mismatch');
     }
 
+    // Calculate total discount from breakdown array (if any)
+    const total_discount = (breakdown && Array.isArray(breakdown)) 
+      ? breakdown.reduce((sum, item) => sum + (Number(item.discount_amount) || 0), 0)
+      : 0;
+
     const paymentId = uuidv4();
     let generatedReceipt = '';
 
     await withTransaction(async (tx) => {
+      // 1. Ensure Fee Account exists
       const sReq = tx.request();
       sReq.input('sid', sql.UniqueIdentifier, schoolId);
       sReq.input('uid', sql.UniqueIdentifier, student_id);
@@ -98,6 +122,7 @@ exports.verifyAndRecord = async (req, res, next) => {
         WHERE s.id = @uid AND s.school_id = @sid
       `);
       let accountId = sRes.recordset[0]?.account_id;
+      
       if (!accountId) {
         accountId = uuidv4();
         const crAcc = tx.request();
@@ -110,6 +135,7 @@ exports.verifyAndRecord = async (req, res, next) => {
         `);
       }
 
+      // 2. Generate Receipt Number
       const rcptReq = tx.request();
       rcptReq.input('sid', sql.UniqueIdentifier, schoolId);
       const rcptRes = await rcptReq.query(`
@@ -120,6 +146,7 @@ exports.verifyAndRecord = async (req, res, next) => {
 
       const amt = Number(amount_paise) || rpPayment.amount;
 
+      // 3. Insert Main Payment Record
       const pReq = tx.request();
       pReq.input('id', sql.UniqueIdentifier, paymentId);
       pReq.input('sid', sql.UniqueIdentifier, schoolId);
@@ -140,6 +167,7 @@ exports.verifyAndRecord = async (req, res, next) => {
         VALUES (@id, @sid, @invId, @aid, @uid, @rcpt, CONVERT(date, GETUTCDATE()), @amt, @mth, @ref, @cby, @rmk, 'razorpay', @roid, @rpid, @rsig)
       `);
 
+      // 4. Update Student Fee Account Balances
       const accReq = tx.request();
       accReq.input('aid', sql.UniqueIdentifier, accountId);
       accReq.input('amt', sql.BigInt, amt);
@@ -152,21 +180,57 @@ exports.verifyAndRecord = async (req, res, next) => {
         WHERE id = @aid
       `);
 
-     if (invoice_id) {
+      // 🔴 5. Insert Itemized Breakdown & Update Invoice Items (NEW LOGIC)
+      if (breakdown && Array.isArray(breakdown) && breakdown.length > 0) {
+        for (const item of breakdown) {
+          if (item.category_id === 'legacy_arrears') continue;
+
+          const itReq = tx.request();
+          itReq.input('sid', sql.UniqueIdentifier, schoolId);
+          itReq.input('pid', sql.UniqueIdentifier, paymentId);
+          itReq.input('cid', sql.UniqueIdentifier, item.category_id);
+          itReq.input('pAmt', sql.BigInt, Number(item.pay_amount) || 0);
+          itReq.input('dAmt', sql.BigInt, Number(item.discount_amount) || 0);
+          
+          await itReq.query(`
+            INSERT INTO fee_payment_items (school_id, payment_id, fee_category_id, amount_paise, discount_paise)
+            VALUES (@sid, @pid, @cid, @pAmt, @dAmt)
+          `);
+
+          // Update specific item balances if linked to an invoice
+          if (invoice_id) {
+            const iItReq = tx.request();
+            iItReq.input('invId', sql.UniqueIdentifier, invoice_id);
+            iItReq.input('cid', sql.UniqueIdentifier, item.category_id);
+            iItReq.input('pAmt', sql.BigInt, Number(item.pay_amount) || 0);
+            iItReq.input('dAmt', sql.BigInt, Number(item.discount_amount) || 0);
+            await iItReq.query(`
+              UPDATE fee_invoice_items 
+              SET paid_paise = paid_paise + @pAmt, discount_paise = discount_paise + @dAmt
+              WHERE invoice_id = @invId AND fee_category_id = @cid
+            `);
+          }
+        }
+      }
+
+      // 🔴 5.5 Update Main Invoice Total Balances (UPDATED LOGIC)
+      if (invoice_id) {
         const invReq = tx.request();
         invReq.input('invId', sql.UniqueIdentifier, invoice_id);
         invReq.input('amt', sql.BigInt, amt);
+        invReq.input('dsc', sql.BigInt, total_discount);
         await invReq.query(`
           UPDATE fee_invoices
           SET paid_paise = paid_paise + @amt,
-              balance_paise = CASE WHEN total_paise - discount_paise - paid_paise - @amt < 0 THEN 0 ELSE total_paise - discount_paise - paid_paise - @amt END,
-              status = CASE WHEN total_paise - discount_paise <= paid_paise + @amt THEN 'paid' ELSE 'partial' END,
+              discount_paise = discount_paise + @dsc,
+              balance_paise = CASE WHEN total_paise - (discount_paise + @dsc) - (paid_paise + @amt) < 0 THEN 0 ELSE total_paise - (discount_paise + @dsc) - (paid_paise + @amt) END,
+              status = CASE WHEN total_paise - (discount_paise + @dsc) <= (paid_paise + @amt) THEN 'paid' ELSE 'partial' END,
               updated_at = GETUTCDATE()
           WHERE id = @invId
         `);
       }
       
-      // 🔴 NEW: Add Razorpay payment to Dashboard Recent Activity
+      // 6. Log to Dashboard Recent Activity
       try {
         const logReq = tx.request();
         logReq.input('lid', sql.UniqueIdentifier, uuidv4());
@@ -175,7 +239,7 @@ exports.verifyAndRecord = async (req, res, next) => {
         logReq.input('unm', sql.NVarChar(200), userName || 'Accountant');
         logReq.input('act', sql.NVarChar(50), 'FEE_PAID');
         logReq.input('det', sql.NVarChar(sql.MAX), JSON.stringify({
-          studentName: "Student", // You can fetch real name if needed
+          studentName: "Student", // Real name fetching can be optimized if needed
           amount: (amt / 100).toFixed(0),
           receiptNo: generatedReceipt,
           paymentMethod: rpPayment.method === 'upi' ? 'UPI' : rpPayment.method === 'card' ? 'Card' : 'Razorpay Online'
@@ -184,14 +248,16 @@ exports.verifyAndRecord = async (req, res, next) => {
           INSERT INTO audit_logs (id, school_id, user_id, user_name, action_type, details, created_at)
           VALUES (@lid, @sid, @uid, @unm, @act, @det, GETUTCDATE())
         `);
-     } catch (logErr) {
+      } catch (logErr) {
         console.warn('Audit Logging Warning (Razorpay):', logErr.message);
       }
       
     });
     
-       require('../services/receiptService').sendPaymentConfirmationWhatsapp(schoolId, paymentId); // fire & forget
+    // Fire and forget Notifications
+    require('../services/receiptService').sendPaymentConfirmationWhatsapp(schoolId, paymentId);
+    require('../services/receiptService').sendPaymentConfirmationEmail(schoolId, paymentId);
 
-       return success(res, { id: paymentId, receipt_no: generatedReceipt }, `Payment of ₹${(amount_paise/100).toFixed(2)} verified & recorded`);
+    return success(res, { id: paymentId, receipt_no: generatedReceipt }, `Payment of ₹${(amount_paise/100).toFixed(2)} verified & recorded`);
   } catch (err) { next(err); }
 };
