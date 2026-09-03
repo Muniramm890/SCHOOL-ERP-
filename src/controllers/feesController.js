@@ -184,31 +184,33 @@ exports.getStudentAccount = async (req, res, next) => {
          ORDER BY fi.due_date DESC`,
         { uid: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
       ),
-      // NEW: Fetch Category-wise breakdown for active invoices
-      query(
-        `SELECT fii.invoice_id, fii.fee_category_id, fc.name AS category_name, 
-                fii.amount_paise, fii.paid_paise, fii.discount_paise,
-                (fii.amount_paise - fii.paid_paise - fii.discount_paise) AS pending_paise
-         FROM fee_invoice_items fii
-         JOIN fee_categories fc ON fc.id = fii.fee_category_id
-         JOIN fee_invoices fi ON fi.id = fii.invoice_id
-         WHERE fi.student_id = @uid AND fi.school_id = @sid AND fi.status != 'paid' AND fi.deleted_at IS NULL`,
-        { uid: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
-      ),
       query(
         `SELECT fp.*, u.full_name AS collected_by_name FROM fee_payments fp
          LEFT JOIN users u ON u.id = fp.collected_by
          WHERE fp.student_id = @uid AND fp.school_id = @sid AND fp.deleted_at IS NULL
          ORDER BY fp.payment_date DESC`,
         { uid: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+      ),
+      // 🔴 FIX: SUM() lagaya aur category wise Group By kiya
+      query(
+        `SELECT fii.fee_category_id, fc.name AS category_name, 
+                SUM(fii.amount_paise - fii.paid_paise - fii.discount_paise) AS pending_paise
+         FROM fee_invoice_items fii
+         JOIN fee_categories fc ON fc.id = fii.fee_category_id
+         JOIN fee_invoices fi ON fi.id = fii.invoice_id
+         WHERE fi.student_id = @uid AND fi.school_id = @sid AND fi.status != 'paid' AND fi.deleted_at IS NULL
+         GROUP BY fii.fee_category_id, fc.name
+         HAVING SUM(fii.amount_paise - fii.paid_paise - fii.discount_paise) > 0`,
+        { uid: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
       )
     ]);
 
+    // 🔴 FIX: pending_items ko return payload me add kiya
     return success(res, {
       account: student,
       invoices: invoices?.recordset || [],
-      pending_items: pending_items?.recordset || [],
-      payments: payments?.recordset || []
+      payments: payments?.recordset || [],
+      pending_items: pending_items?.recordset || [] 
     }, 'Student financial records fetched');
   } catch (err) { next(err); }
 };
