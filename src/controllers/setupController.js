@@ -235,8 +235,8 @@ exports.updateSchool = async (req, res, next) => {
     const { schoolId } = req.user;
     const old = await queryOne(`SELECT * FROM schools WHERE id=@sid`, { sid: { type: sql.UniqueIdentifier, value: schoolId } });
 
-    const fields = [
-      'name','tagline','logo_url','brand_color','affiliation_board','affiliation_no',
+        const fields = [
+      'name','tagline','logo_url','watermark_url','brand_color','affiliation_board','affiliation_no',
       'udise_code','address_line1','address_line2','city','state','pincode','phone','email',
       'website','principal_name','established_year','timezone','academic_year_start','academic_year_end',
       'working_days','periods_per_day','period_duration_min','school_start_time','school_end_time'
@@ -247,6 +247,7 @@ exports.updateSchool = async (req, res, next) => {
     
     const typeMap = {
       name: sql.NVarChar(255), tagline: sql.NVarChar(500), logo_url: sql.NVarChar(sql.MAX),
+      watermark_url: sql.NVarChar(sql.MAX),
       brand_color: sql.VarChar(10), affiliation_board: sql.NVarChar(100), affiliation_no: sql.NVarChar(100),
       udise_code: sql.NVarChar(100), address_line1: sql.NVarChar(500), address_line2: sql.NVarChar(500),
       city: sql.NVarChar(100), state: sql.NVarChar(100), pincode: sql.Char(6), phone: sql.NVarChar(50),
@@ -582,6 +583,34 @@ exports.removeGradeSubject = async (req, res, next) => {
     );
 
     return success(res, null, 'Subject unlinked from class successfully');
+  } catch (err) { next(err); }
+};
+
+// ═══════════════ SCHOOL ASSET UPLOAD (logo / watermark) ═══════════════════
+exports.uploadSchoolAsset = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { type } = req.body; // 'logo' | 'watermark'
+    if (!['logo', 'watermark'].includes(type)) return badRequest(res, 'type must be "logo" or "watermark"');
+    if (!req.file) return badRequest(res, 'No file uploaded');
+
+    const school = await queryOne(`SELECT name FROM schools WHERE id=@sid`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId } });
+
+    const { uploadImageBuffer } = require('../services/uploadService');
+    const result = await uploadImageBuffer(req.file.buffer, {
+      schoolName: school.name,
+      subfolder: type, // 'logo' or 'watermark'
+      fileName: type,
+    });
+
+    const column = type === 'logo' ? 'logo_url' : 'watermark_url';
+    await query(
+      `UPDATE schools SET ${column}=@url, updated_at=GETUTCDATE() WHERE id=@sid`,
+      { url: { type: sql.NVarChar(sql.MAX), value: result.secure_url }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+
+    return success(res, { url: result.secure_url }, `${type} uploaded successfully`);
   } catch (err) { next(err); }
 };
 
