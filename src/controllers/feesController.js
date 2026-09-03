@@ -192,15 +192,28 @@ exports.getStudentAccount = async (req, res, next) => {
         { uid: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
       ),
       // 🔴 FIX: SUM() lagaya aur category wise Group By kiya
+     // 🔴 100% BULLETPROOF CATEGORY DUE CALCULATION (Dynamic Ledger)
       query(
-        `SELECT fii.fee_category_id, fc.name AS category_name, 
-                SUM(fii.amount_paise - fii.paid_paise - fii.discount_paise) AS pending_paise
-         FROM fee_invoice_items fii
-         JOIN fee_categories fc ON fc.id = fii.fee_category_id
-         JOIN fee_invoices fi ON fi.id = fii.invoice_id
-         WHERE fi.student_id = @uid AND fi.school_id = @sid AND fi.status != 'paid' AND fi.deleted_at IS NULL
-         GROUP BY fii.fee_category_id, fc.name
-         HAVING SUM(fii.amount_paise - fii.paid_paise - fii.discount_paise) > 0`,
+        `;WITH Billed AS (
+            SELECT fii.fee_category_id, SUM(fii.amount_paise) as total_billed
+            FROM fee_invoice_items fii
+            JOIN fee_invoices fi ON fi.id = fii.invoice_id
+            WHERE fi.student_id = @uid AND fi.school_id = @sid AND fi.deleted_at IS NULL
+            GROUP BY fii.fee_category_id
+         ),
+         Paid AS (
+            SELECT fpi.fee_category_id, SUM(fpi.amount_paise + fpi.discount_paise) as total_paid
+            FROM fee_payment_items fpi
+            JOIN fee_payments fp ON fp.id = fpi.payment_id
+            WHERE fp.student_id = @uid AND fp.school_id = @sid AND fp.is_void = 0 AND fp.deleted_at IS NULL
+            GROUP BY fpi.fee_category_id
+         )
+         SELECT b.fee_category_id, fc.name AS category_name,
+                (b.total_billed - ISNULL(p.total_paid, 0)) AS pending_paise
+         FROM Billed b
+         LEFT JOIN Paid p ON p.fee_category_id = b.fee_category_id
+         JOIN fee_categories fc ON fc.id = b.fee_category_id
+         WHERE (b.total_billed - ISNULL(p.total_paid, 0)) > 0`,
         { uid: { type: sql.UniqueIdentifier, value: studentId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
       )
     ]);
