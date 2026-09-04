@@ -30,16 +30,7 @@ exports.listExamGroups = async (req, res, next) => {
 
 // ═══════════════════════════════════════════════════════════════
 // POST /api/results/compute/:examGroupId
-// CORE ENGINE — aggregates exam_marks → exam_results.
-//
-// - Pass/Fail: per-subject against exam_subjects.passing_marks.
-//   Overall FAIL if the student fails ANY subject. Absent = fail.
-// - Incomplete: any student missing even one subject's marks entry
-//   is skipped from ranking and marked status='incomplete'.
-// - class_rank  = dense rank within the student's own section.
-// - school_rank = dense rank across the WHOLE SCHOOL for this exam
-//   (percentage is normalized, so cross-grade comparison is valid
-//   mathematically — flip to grade-wide easily if you'd rather).
+// UPDATED LOGIC: Excludes 'is_grade_only' subjects from Percentage & Rank
 // ═══════════════════════════════════════════════════════════════
 exports.computeResults = async (req, res, next) => {
   try {
@@ -52,7 +43,6 @@ exports.computeResults = async (req, res, next) => {
     );
     if (!examGroup) return notFound(res, 'Exam group not found');
 
-    // 1. Sections included in this exam
     const secRows = await query(
       `SELECT section_id FROM exam_sections WHERE exam_group_id=@egId AND school_id=@sid`,
       { egId: { type: sql.UniqueIdentifier, value: examGroupId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
@@ -60,9 +50,9 @@ exports.computeResults = async (req, res, next) => {
     const sectionIds = secRows.recordset.map((r) => r.section_id);
     if (!sectionIds.length) return badRequest(res, 'No sections configured for this exam');
 
-    // 2. exam_subjects per section (need max_marks + passing_marks)
+    // 🔴 UPDATE 1: Added 'is_grade_only' to the query
     const esRows = await query(
-      `SELECT id AS exam_subject_id, section_id, subject_id, max_marks, passing_marks
+      `SELECT id AS exam_subject_id, section_id, subject_id, max_marks, passing_marks, is_grade_only
        FROM exam_subjects WHERE exam_group_id=@egId AND school_id=@sid AND deleted_at IS NULL`,
       { egId: { type: sql.UniqueIdentifier, value: examGroupId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
@@ -75,7 +65,6 @@ exports.computeResults = async (req, res, next) => {
       subjectsBySection[es.section_id].push(es);
     });
 
-    // 3. grading scale (for letter grade lookup)
     const gsRows = await query(
       `SELECT grade_label, min_percent, max_percent FROM grading_scale WHERE school_id=@sid ORDER BY sort_order`,
       { sid: { type: sql.UniqueIdentifier, value: schoolId } }
@@ -86,31 +75,35 @@ exports.computeResults = async (req, res, next) => {
       return row ? row.grade_label : null;
     };
 
-    // 4. all exam_marks for every exam_subject in this exam, in ONE query
     const allExamSubjectIds = examSubjects.map((es) => es.exam_subject_id);
     const idParams = {};
     const idNames = allExamSubjectIds.map((id, i) => {
       idParams[`es${i}`] = { type: sql.UniqueIdentifier, value: id };
       return `@es${i}`;
     });
+    
+    // 🔴 UPDATE 2: Added 'grade_obtained' to the query
     const marksRows = await query(
-      `SELECT exam_subject_id, student_id, marks_obtained, status
+      `SELECT exam_subject_id, student_id, marks_obtained, grade_obtained, status
        FROM exam_marks WHERE exam_subject_id IN (${idNames.join(',')})`,
       idParams
     );
-    const marksByStudentSubject = {}; // studentId -> { examSubjectId -> row }
+    const marksByStudentSubject = {};
     marksRows.recordset.forEach((m) => {
       if (!marksByStudentSubject[m.student_id]) marksByStudentSubject[m.student_id] = {};
       marksByStudentSubject[m.student_id][m.exam_subject_id] = m;
     });
 
-    // 5. compute per student, per section
     const computedRows = [];
 
     for (const sectionId of sectionIds) {
       const subjectsHere = subjectsBySection[sectionId] || [];
       if (!subjectsHere.length) continue;
-      const maxTotal = subjectsHere.reduce((s, x) => s + Number(x.max_marks), 0);
+      
+      // 🔴 UPDATE 3: Calculate maxTotal strictly from Scholastic subjects
+      const maxTotal = subjectsHere
+        .filter(s => !s.is_grade_only)
+        .reduce((s, x) => s + Number(x.max_marks), 0);
 
       const enrolRows = await query(
         `SELECT student_id FROM enrolments
@@ -130,14 +123,26 @@ exports.computeResults = async (req, res, next) => {
 
         for (const es of subjectsHere) {
           const row = studentMarks[es.exam_subject_id];
-          if (!row || row.marks_obtained === null || row.marks_obtained === undefined) {
-            continue; // marks not entered yet for this subject
+          
+          // 🔴 UPDATE 4: Check completeness logic (marks vs grades)
+          if (!row) continue;
+          if (row.status === 'present') {
+              if (es.is_grade_only && !row.grade_obtained) continue; 
+              if (!es.is_grade_only && (row.marks_obtained === null || row.marks_obtained === undefined)) continue;
           }
+          
           enteredCount++;
-          const obtained = Number(row.marks_obtained);
-          totalMarks += obtained;
-          if (row.status === 'absent' || obtained < Number(es.passing_marks)) {
-            anyFail = true;
+
+          // 🔴 UPDATE 5: Result Computation Logic
+          if (es.is_grade_only) {
+            // Only affects Pass/Fail if absent, doesn't affect total marks
+            if (row.status === 'absent') anyFail = true;
+          } else {
+            const obtained = Number(row.marks_obtained);
+            totalMarks += obtained;
+            if (row.status === 'absent' || obtained < Number(es.passing_marks)) {
+              anyFail = true;
+            }
           }
         }
 
@@ -161,9 +166,8 @@ exports.computeResults = async (req, res, next) => {
       }
     }
 
-    // 6. Ranking (dense rank; ties share a rank) — only over computable rows
+    // Ranking Logic (Unchanged)
     const ranked = computedRows.filter((r) => r.percentage !== null);
-
     const bySection = {};
     ranked.forEach((r) => { (bySection[r.section_id] = bySection[r.section_id] || []).push(r); });
     Object.values(bySection).forEach((list) => {
@@ -184,7 +188,7 @@ exports.computeResults = async (req, res, next) => {
       prevSPct = r.percentage;
     });
 
-    // 7. Persist — delete-then-insert, transactional
+    // DB Transaction (Unchanged)
     await withTransaction(async (tx) => {
       const rDel = tx.request();
       rDel.input('egId', sql.UniqueIdentifier, examGroupId);
@@ -504,6 +508,7 @@ exports.getStudentTrend = async (req, res, next) => {
 // GET /api/results/student/:studentId/report-card?exam_group_id=
 // Full subject-wise marksheet for one student, one exam.
 // ═══════════════════════════════════════════════════════════════
+
 exports.getStudentReportCard = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -518,8 +523,10 @@ exports.getStudentReportCard = async (req, res, next) => {
     );
     if (!overall) return notFound(res, 'Result not computed for this student yet');
 
+    // 🔴 UPDATE: Added is_grade_only and grade_obtained to this query
     const subjects = await query(
-      `SELECT s.name AS subject_name, em.marks_obtained, em.status, es.max_marks, es.passing_marks
+      `SELECT s.name AS subject_name, em.marks_obtained, em.grade_obtained, em.status, 
+              es.max_marks, es.passing_marks, es.is_grade_only
        FROM exam_marks em
        JOIN exam_subjects es ON es.id = em.exam_subject_id
        JOIN subjects s ON s.id = es.subject_id
