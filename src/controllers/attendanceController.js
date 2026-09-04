@@ -162,12 +162,12 @@ exports.getClassAnalysis = async (req, res, next) => {
     );
 
     const trend = await query(
-      `SELECT attendance_date,
+      `SELECT CONVERT(varchar(10), attendance_date, 23) AS attendance_date,
               SUM(CASE WHEN status='P' THEN 1 ELSE 0 END) AS present,
               COUNT(*) AS total
        FROM student_attendance
        WHERE school_id=@sid AND section_id=@secId AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
-       GROUP BY attendance_date ORDER BY attendance_date`,
+       GROUP BY CONVERT(varchar(10), attendance_date, 23) ORDER BY attendance_date`,
       p
     );
 
@@ -221,28 +221,26 @@ exports.getSchoolOverview = async (req, res, next) => {
       { sid: sidParam, from: { type: sql.Date, value: rangeFrom }, to: { type: sql.Date, value: rangeTo } }
     );
 
-    const trendFrom = daysAgoStr(6);
-    const trendTo = todayStr();
     const trendRaw = await query(
       `SELECT CONVERT(varchar(10), attendance_date, 23) AS date_key,
               SUM(CASE WHEN status='P' THEN 1 ELSE 0 END) AS present,
               COUNT(*) AS total
        FROM student_attendance
-       WHERE school_id=@sid AND attendance_date BETWEEN @tfrom AND @tto AND deleted_at IS NULL
+       WHERE school_id=@sid AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
        GROUP BY CONVERT(varchar(10), attendance_date, 23)`,
-      { sid: sidParam, tfrom: { type: sql.Date, value: trendFrom }, tto: { type: sql.Date, value: trendTo } }
+      { sid: sidParam, from: { type: sql.Date, value: rangeFrom }, to: { type: sql.Date, value: rangeTo } }
     );
     const trendMap = {};
     trendRaw.recordset.forEach((r) => { trendMap[r.date_key] = r; });
     const trend = [];
-    for (let i = 6; i >= 0; i--) {
-      const dateKey = daysAgoStr(i);
+    for (let d = new Date(`${rangeFrom}T00:00:00`); d <= new Date(`${rangeTo}T00:00:00`); d.setDate(d.getDate() + 1)) {
+      const dateKey = d.toISOString().split('T')[0];
       const row = trendMap[dateKey];
       const present = row ? row.present : 0;
       const total = row ? row.total : 0;
       trend.push({
         date: dateKey,
-        day: new Date(`${dateKey}T00:00:00`).toLocaleDateString('en-US', { weekday: 'short' }),
+        day: d.toLocaleDateString('en-US', { weekday: 'short' }),
         percentage: total > 0 ? Math.round((present / total) * 100) : 0,
       });
     }
@@ -267,7 +265,7 @@ exports.getStudentHistory = async (req, res, next) => {
     const rangeTo = to || todayStr();
 
     const rows = await query(
-      `SELECT attendance_date, status, remarks
+      `SELECT CONVERT(varchar(10), attendance_date, 23) AS attendance_date, status, remarks
        FROM student_attendance
        WHERE school_id=@sid AND student_id=@stid AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
        ORDER BY attendance_date`,
@@ -391,7 +389,7 @@ exports.getStaffAnalysis = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const { from, to } = req.query;
-    const rangeFrom = from || daysAgoStr(29);
+    const rangeFrom = from || daysAgoStr(6);
     const rangeTo = to || todayStr();
     const p = {
       sid: { type: sql.UniqueIdentifier, value: schoolId },
@@ -418,28 +416,26 @@ exports.getStaffAnalysis = async (req, res, next) => {
       p
     );
 
-    const trendFrom = daysAgoStr(6);
-    const trendTo = todayStr();
-    const trendRaw = await query(
+        const trendRaw = await query(
       `SELECT CONVERT(varchar(10), attendance_date, 23) AS date_key,
               SUM(CASE WHEN status='P' THEN 1 ELSE 0 END) AS present,
               COUNT(*) AS total
        FROM staff_attendance
-       WHERE school_id=@sid AND attendance_date BETWEEN @tfrom AND @tto AND deleted_at IS NULL
+       WHERE school_id=@sid AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
        GROUP BY CONVERT(varchar(10), attendance_date, 23)`,
-      { sid: p.sid, tfrom: { type: sql.Date, value: trendFrom }, tto: { type: sql.Date, value: trendTo } }
+      p
     );
     const trendMap = {};
     trendRaw.recordset.forEach((r) => { trendMap[r.date_key] = r; });
     const trend = [];
-    for (let i = 6; i >= 0; i--) {
-      const dateKey = daysAgoStr(i);
+    for (let d = new Date(`${rangeFrom}T00:00:00`); d <= new Date(`${rangeTo}T00:00:00`); d.setDate(d.getDate() + 1)) {
+      const dateKey = d.toISOString().split('T')[0];
       const row = trendMap[dateKey];
       const present = row ? row.present : 0;
       const total = row ? row.total : 0;
       trend.push({
         date: dateKey,
-        day: new Date(`${dateKey}T00:00:00`).toLocaleDateString('en-US', { weekday: 'short' }),
+        day: d.toLocaleDateString('en-US', { weekday: 'short' }),
         percentage: total > 0 ? Math.round((present / total) * 100) : 0,
       });
     }
@@ -463,7 +459,7 @@ exports.getStaffHistory = async (req, res, next) => {
     const rangeTo = to || todayStr();
 
     const rows = await query(
-      `SELECT attendance_date, status, remarks
+      `SELECT CONVERT(varchar(10), attendance_date, 23) AS attendance_date, status, remarks
        FROM staff_attendance
        WHERE school_id=@sid AND user_id=@uid AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
        ORDER BY attendance_date`,
