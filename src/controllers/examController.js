@@ -205,7 +205,7 @@ exports.getDatesheet = async (req, res, next) => {
 
     const result = await query(`
       SELECT exs.id, exs.subject_id, s.name AS subject_name, exs.exam_date,
-             exs.start_time, exs.duration_minutes, exs.max_marks, exs.passing_marks
+             exs.start_time, exs.duration_minutes, exs.max_marks, exs.passing_marks, exs.is_grade_only
       FROM exam_subjects exs
       JOIN subjects s ON s.id = exs.subject_id
       WHERE exs.exam_group_id=@eid AND exs.section_id=@secid AND exs.school_id=@sid AND exs.deleted_at IS NULL
@@ -221,7 +221,6 @@ exports.getDatesheet = async (req, res, next) => {
 };
 
 // PUT /api/exams/:id/datesheet
-// Body: { section_id, entries: [{ subject_id, exam_date, start_time, duration_minutes, max_marks, passing_marks }] }
 exports.saveDatesheet = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -249,12 +248,14 @@ exports.saveDatesheet = async (req, res, next) => {
         r.input('edate', sql.Date, e.exam_date || null);
         r.input('stime', sql.VarChar(8), e.start_time ? `${e.start_time}:00`.slice(0, 8) : '09:00:00');
         r.input('dur', sql.SmallInt, Number(e.duration_minutes) || 120);
-        r.input('maxm', sql.Decimal(6, 2), Number(e.max_marks) || 100);
-        r.input('passm', sql.Decimal(6, 2), Number(e.passing_marks) || 33);
+        r.input('maxm', sql.Decimal(6, 2), e.is_grade_only ? 0 : (Number(e.max_marks) || 100));
+        r.input('passm', sql.Decimal(6, 2), e.is_grade_only ? 0 : (Number(e.passing_marks) || 33));
+        r.input('isgrade', sql.Bit, e.is_grade_only ? 1 : 0);
+
         await r.query(`
           INSERT INTO exam_subjects
-            (id, school_id, exam_group_id, section_id, subject_id, exam_date, start_time, duration_minutes, max_marks, passing_marks)
-          VALUES (NEWID(), @sid, @eid, @secid, @subid, @edate, @stime, @dur, @maxm, @passm)
+            (id, school_id, exam_group_id, section_id, subject_id, exam_date, start_time, duration_minutes, max_marks, passing_marks, is_grade_only)
+          VALUES (NEWID(), @sid, @eid, @secid, @subid, @edate, @stime, @dur, @maxm, @passm, @isgrade)
         `);
       }
     });
@@ -291,7 +292,7 @@ exports.getMarksRoster = async (req, res, next) => {
     if (!section_id || !subject_id) return badRequest(res, 'section_id and subject_id are required');
 
     const examSubject = await queryOne(
-      `SELECT id, max_marks, passing_marks FROM exam_subjects
+      `SELECT id, max_marks, passing_marks, is_grade_only FROM exam_subjects
        WHERE exam_group_id=@eid AND section_id=@secid AND subject_id=@subid AND school_id=@sid AND deleted_at IS NULL`,
       {
         eid: { type: sql.UniqueIdentifier, value: id },
@@ -304,7 +305,7 @@ exports.getMarksRoster = async (req, res, next) => {
 
     const roster = await query(`
       SELECT st.id AS student_id, st.first_name, st.last_name, e.roll_no,
-             em.marks_obtained, ISNULL(em.status, 'present') AS status, em.remarks
+             em.marks_obtained, em.grade_obtained, ISNULL(em.status, 'present') AS status, em.remarks
       FROM enrolments e
       JOIN students st ON st.id = e.student_id
       LEFT JOIN exam_marks em ON em.exam_subject_id = @esid AND em.student_id = st.id
@@ -321,7 +322,6 @@ exports.getMarksRoster = async (req, res, next) => {
 };
 
 // POST /api/exams/:id/marks
-// Body: { exam_subject_id, entries: [{ student_id, marks_obtained, status, remarks }] }
 exports.saveMarks = async (req, res, next) => {
   try {
     const { schoolId, userId } = req.user;
@@ -342,24 +342,26 @@ exports.saveMarks = async (req, res, next) => {
         if (existing.recordset.length > 0) {
           const rUpd = tx.request();
           rUpd.input('id', sql.UniqueIdentifier, existing.recordset[0].id);
-          rUpd.input('marks', sql.Decimal(6, 2), Number(e.marks_obtained) || 0);
+          rUpd.input('marks', sql.Decimal(6, 2), e.marks_obtained != null ? Number(e.marks_obtained) : 0);
+          rUpd.input('grade', sql.VarChar(10), e.grade_obtained || null);
           rUpd.input('status', sql.VarChar(20), e.status || 'present');
           rUpd.input('remarks', sql.NVarChar(500), e.remarks || null);
           await rUpd.query(
-            `UPDATE exam_marks SET marks_obtained=@marks, status=@status, remarks=@remarks, updated_at=GETUTCDATE() WHERE id=@id`
+            `UPDATE exam_marks SET marks_obtained=@marks, grade_obtained=@grade, status=@status, remarks=@remarks, updated_at=GETUTCDATE() WHERE id=@id`
           );
         } else {
           const rIns = tx.request();
           rIns.input('sid', sql.UniqueIdentifier, schoolId);
           rIns.input('esid', sql.UniqueIdentifier, exam_subject_id);
           rIns.input('stuid', sql.UniqueIdentifier, e.student_id);
-          rIns.input('marks', sql.Decimal(6, 2), Number(e.marks_obtained) || 0);
+          rIns.input('marks', sql.Decimal(6, 2), e.marks_obtained != null ? Number(e.marks_obtained) : 0);
+          rIns.input('grade', sql.VarChar(10), e.grade_obtained || null);
           rIns.input('status', sql.VarChar(20), e.status || 'present');
           rIns.input('remarks', sql.NVarChar(500), e.remarks || null);
           rIns.input('uid', sql.UniqueIdentifier, userId || null);
           await rIns.query(`
-            INSERT INTO exam_marks (id, school_id, exam_subject_id, student_id, marks_obtained, status, remarks, entered_by)
-            VALUES (NEWID(), @sid, @esid, @stuid, @marks, @status, @remarks, @uid)
+            INSERT INTO exam_marks (id, school_id, exam_subject_id, student_id, marks_obtained, grade_obtained, status, remarks, entered_by)
+            VALUES (NEWID(), @sid, @esid, @stuid, @marks, @grade, @status, @remarks, @uid)
           `);
         }
       }
@@ -381,9 +383,9 @@ exports.processResults = async (req, res, next) => {
 
     const totalsRes = await query(`
       SELECT e.student_id, e.roll_no,
-             SUM(ISNULL(em.marks_obtained, 0)) AS total_marks,
+             SUM(CASE WHEN exs.is_grade_only = 0 THEN ISNULL(em.marks_obtained, 0) ELSE 0 END) AS total_marks,
              (SELECT SUM(max_marks) FROM exam_subjects
-                WHERE exam_group_id=@eid AND section_id=@secid AND deleted_at IS NULL) AS max_total
+                WHERE exam_group_id=@eid AND section_id=@secid AND is_grade_only = 0 AND deleted_at IS NULL) AS max_total
       FROM enrolments e
       LEFT JOIN exam_subjects exs ON exs.exam_group_id=@eid AND exs.section_id=@secid AND exs.deleted_at IS NULL
       LEFT JOIN exam_marks em ON em.exam_subject_id = exs.id AND em.student_id = e.student_id
@@ -411,7 +413,6 @@ exports.processResults = async (req, res, next) => {
       return { ...r, percentage, grade: gradeFor(percentage) };
     });
 
-    // rank within this class-section for this exam (ties share rank)
     const sorted = [...rows].sort((a, b) => b.percentage - a.percentage);
     sorted.forEach((r, i) => {
       r.class_rank = i > 0 && sorted[i - 1].percentage === r.percentage ? sorted[i - 1].class_rank : i + 1;
