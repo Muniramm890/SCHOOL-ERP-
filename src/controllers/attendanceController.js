@@ -221,24 +221,38 @@ exports.getSchoolOverview = async (req, res, next) => {
       { sid: sidParam, from: { type: sql.Date, value: rangeFrom }, to: { type: sql.Date, value: rangeTo } }
     );
 
-    const trend = await query(
-      `SELECT attendance_date,
+    const trendFrom = daysAgoStr(6);
+    const trendTo = todayStr();
+    const trendRaw = await query(
+      `SELECT CONVERT(varchar(10), attendance_date, 23) AS date_key,
               SUM(CASE WHEN status='P' THEN 1 ELSE 0 END) AS present,
               COUNT(*) AS total
        FROM student_attendance
-       WHERE school_id=@sid AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
-       GROUP BY attendance_date ORDER BY attendance_date`,
-      { sid: sidParam, from: { type: sql.Date, value: rangeFrom }, to: { type: sql.Date, value: rangeTo } }
+       WHERE school_id=@sid AND attendance_date BETWEEN @tfrom AND @tto AND deleted_at IS NULL
+       GROUP BY CONVERT(varchar(10), attendance_date, 23)`,
+      { sid: sidParam, tfrom: { type: sql.Date, value: trendFrom }, tto: { type: sql.Date, value: trendTo } }
     );
+    const trendMap = {};
+    trendRaw.recordset.forEach((r) => { trendMap[r.date_key] = r; });
+    const trend = [];
+    for (let i = 6; i >= 0; i--) {
+      const dateKey = daysAgoStr(i);
+      const row = trendMap[dateKey];
+      const present = row ? row.present : 0;
+      const total = row ? row.total : 0;
+      trend.push({
+        date: dateKey,
+        day: new Date(`${dateKey}T00:00:00`).toLocaleDateString('en-US', { weekday: 'short' }),
+        percentage: total > 0 ? Math.round((present / total) * 100) : 0,
+      });
+    }
 
     return success(res, {
       today: todayCounts || { present: 0, absent: 0, leave: 0, od: 0, total: 0 },
       gradeWise: gradeWise.recordset.map((r) => ({
         ...r, percentage: r.total > 0 ? Math.round((r.present / r.total) * 100) : 0,
       })),
-      trend: trend.recordset.map((r) => ({
-        date: r.attendance_date, percentage: r.total > 0 ? Math.round((r.present / r.total) * 100) : 0,
-      })),
+      trend,
     }, 'School overview fetched');
   } catch (err) { next(err); }
 };
@@ -404,23 +418,37 @@ exports.getStaffAnalysis = async (req, res, next) => {
       p
     );
 
-    const trend = await query(
-      `SELECT attendance_date,
+    const trendFrom = daysAgoStr(6);
+    const trendTo = todayStr();
+    const trendRaw = await query(
+      `SELECT CONVERT(varchar(10), attendance_date, 23) AS date_key,
               SUM(CASE WHEN status='P' THEN 1 ELSE 0 END) AS present,
               COUNT(*) AS total
        FROM staff_attendance
-       WHERE school_id=@sid AND attendance_date BETWEEN @from AND @to AND deleted_at IS NULL
-       GROUP BY attendance_date ORDER BY attendance_date`,
-      p
+       WHERE school_id=@sid AND attendance_date BETWEEN @tfrom AND @tto AND deleted_at IS NULL
+       GROUP BY CONVERT(varchar(10), attendance_date, 23)`,
+      { sid: p.sid, tfrom: { type: sql.Date, value: trendFrom }, tto: { type: sql.Date, value: trendTo } }
     );
+    const trendMap = {};
+    trendRaw.recordset.forEach((r) => { trendMap[r.date_key] = r; });
+    const trend = [];
+    for (let i = 6; i >= 0; i--) {
+      const dateKey = daysAgoStr(i);
+      const row = trendMap[dateKey];
+      const present = row ? row.present : 0;
+      const total = row ? row.total : 0;
+      trend.push({
+        date: dateKey,
+        day: new Date(`${dateKey}T00:00:00`).toLocaleDateString('en-US', { weekday: 'short' }),
+        percentage: total > 0 ? Math.round((present / total) * 100) : 0,
+      });
+    }
 
     return success(res, {
       teachers: perTeacher.recordset.map((r) => ({
         ...r, percentage: r.marked_days > 0 ? Math.round((r.present_days / r.marked_days) * 100) : 0,
       })),
-      trend: trend.recordset.map((r) => ({
-        date: r.attendance_date, percentage: r.total > 0 ? Math.round((r.present / r.total) * 100) : 0,
-      })),
+      trend,
     }, 'Staff analysis fetched');
   } catch (err) { next(err); }
 };
