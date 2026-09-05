@@ -371,82 +371,11 @@ exports.saveMarks = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// ═══════════════ RESULT PROCESSING & PUBLISH ═══════════════════════════════
-
-// POST /api/exams/:id/process   Body: { section_id }
-exports.processResults = async (req, res, next) => {
-  try {
-    const { schoolId } = req.user;
-    const { id } = req.params;
-    const { section_id } = req.body;
-    if (!section_id) return badRequest(res, 'section_id is required');
-
-    const totalsRes = await query(`
-      SELECT e.student_id, e.roll_no,
-             SUM(CASE WHEN exs.is_grade_only = 0 THEN ISNULL(em.marks_obtained, 0) ELSE 0 END) AS total_marks,
-             (SELECT SUM(max_marks) FROM exam_subjects
-                WHERE exam_group_id=@eid AND section_id=@secid AND is_grade_only = 0 AND deleted_at IS NULL) AS max_total
-      FROM enrolments e
-      LEFT JOIN exam_subjects exs ON exs.exam_group_id=@eid AND exs.section_id=@secid AND exs.deleted_at IS NULL
-      LEFT JOIN exam_marks em ON em.exam_subject_id = exs.id AND em.student_id = e.student_id
-      WHERE e.section_id=@secid AND e.school_id=@sid AND e.is_active=1 AND e.deleted_at IS NULL
-      GROUP BY e.student_id, e.roll_no
-    `, {
-      eid: { type: sql.UniqueIdentifier, value: id },
-      secid: { type: sql.UniqueIdentifier, value: section_id },
-      sid: { type: sql.UniqueIdentifier, value: schoolId },
-    });
-
-    const gradingRes = await query(
-      `SELECT grade_label, min_percent, max_percent FROM grading_scale WHERE school_id=@sid ORDER BY min_percent DESC`,
-      { sid: { type: sql.UniqueIdentifier, value: schoolId } }
-    );
-    const scale = gradingRes.recordset;
-    const gradeFor = (pct) => {
-      const band = scale.find((b) => pct >= b.min_percent && pct <= b.max_percent);
-      return band ? band.grade_label : (pct >= 33 ? 'D' : 'F');
-    };
-
-    const rows = totalsRes.recordset.map((r) => {
-      const maxTotal = Number(r.max_total) || 0;
-      const percentage = maxTotal > 0 ? Math.round((Number(r.total_marks) / maxTotal) * 10000) / 100 : 0;
-      return { ...r, percentage, grade: gradeFor(percentage) };
-    });
-
-    const sorted = [...rows].sort((a, b) => b.percentage - a.percentage);
-    sorted.forEach((r, i) => {
-      r.class_rank = i > 0 && sorted[i - 1].percentage === r.percentage ? sorted[i - 1].class_rank : i + 1;
-    });
-
-    await withTransaction(async (tx) => {
-      const rDel = tx.request();
-      rDel.input('eid', sql.UniqueIdentifier, id);
-      rDel.input('secid', sql.UniqueIdentifier, section_id);
-      await rDel.query(`DELETE FROM exam_results WHERE exam_group_id=@eid AND section_id=@secid`);
-
-      for (const r of rows) {
-        const rIns = tx.request();
-        rIns.input('sid', sql.UniqueIdentifier, schoolId);
-        rIns.input('eid', sql.UniqueIdentifier, id);
-        rIns.input('secid', sql.UniqueIdentifier, section_id);
-        rIns.input('stuid', sql.UniqueIdentifier, r.student_id);
-        rIns.input('total', sql.Decimal(8, 2), Number(r.total_marks) || 0);
-        rIns.input('maxtot', sql.Decimal(8, 2), Number(r.max_total) || 0);
-        rIns.input('pct', sql.Decimal(5, 2), r.percentage);
-        rIns.input('grade', sql.VarChar(10), r.grade);
-        rIns.input('rank', sql.Int, r.class_rank);
-        await rIns.query(`
-          INSERT INTO exam_results (id, school_id, exam_group_id, section_id, student_id, total_marks, max_total, percentage, grade, class_rank, status)
-          VALUES (NEWID(), @sid, @eid, @secid, @stuid, @total, @maxtot, @pct, @grade, @rank, 'draft')
-        `);
-      }
-    });
-
-    return success(res, null, 'Results processed successfully');
-  } catch (err) { next(err); }
-};
 
 // GET /api/exams/:id/results?section_id=xxx
+// ═══════════════════════════════════════════════════════════════
+// GET /api/exams/:id/results?section_id=xxx
+// ═══════════════════════════════════════════════════════════════
 exports.getResults = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -455,7 +384,8 @@ exports.getResults = async (req, res, next) => {
     if (!section_id) return badRequest(res, 'section_id is required');
 
     const subjectsRes = await query(`
-      SELECT exs.id, s.name FROM exam_subjects exs
+      SELECT exs.id, s.name, exs.is_grade_only 
+      FROM exam_subjects exs
       JOIN subjects s ON s.id = exs.subject_id
       WHERE exs.exam_group_id=@eid AND exs.section_id=@secid AND exs.deleted_at IS NULL
       ORDER BY exs.exam_date
@@ -468,15 +398,16 @@ exports.getResults = async (req, res, next) => {
       JOIN students st ON st.id = er.student_id
       LEFT JOIN enrolments e ON e.student_id = er.student_id AND e.section_id = er.section_id AND e.is_active=1
       WHERE er.exam_group_id=@eid AND er.section_id=@secid AND er.school_id=@sid
-      ORDER BY er.class_rank
+      ORDER BY ISNULL(er.class_rank, 999999) ASC
     `, {
       eid: { type: sql.UniqueIdentifier, value: id },
       secid: { type: sql.UniqueIdentifier, value: section_id },
       sid: { type: sql.UniqueIdentifier, value: schoolId },
     });
 
+    // 🔴 FIX: Select grade_obtained as well
     const marksRes = await query(`
-      SELECT em.student_id, em.exam_subject_id, em.marks_obtained
+      SELECT em.student_id, em.exam_subject_id, em.marks_obtained, em.grade_obtained, exs.is_grade_only
       FROM exam_marks em
       JOIN exam_subjects exs ON exs.id = em.exam_subject_id
       WHERE exs.exam_group_id=@eid AND exs.section_id=@secid
@@ -485,7 +416,8 @@ exports.getResults = async (req, res, next) => {
     const marksMap = {};
     marksRes.recordset.forEach((m) => {
       if (!marksMap[m.student_id]) marksMap[m.student_id] = {};
-      marksMap[m.student_id][m.exam_subject_id] = m.marks_obtained;
+      // 🔴 FIX: Send grade if it's a grade-only subject, else send marks
+      marksMap[m.student_id][m.exam_subject_id] = m.is_grade_only ? m.grade_obtained : m.marks_obtained;
     });
 
     const rows = resultsRes.recordset.map((r) => ({ ...r, marks: marksMap[r.student_id] || {} }));
