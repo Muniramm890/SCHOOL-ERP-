@@ -1,6 +1,7 @@
 // src/routes/setup.js
 const router = require('express').Router();
 const ctrl = require('../controllers/setupController');
+const examCtrl = require('../controllers/examController');
 const { authenticate, authorize } = require('../middleware/auth');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -44,5 +45,11 @@ router.delete('/sections/:id/hard',       authorize('admin', 'principal'), ctrl.
 router.delete('/subjects/:id/hard',       authorize('admin', 'principal'), ctrl.hardDeleteSubject);
 router.delete('/grade-subjects/unlink',   authorize('admin', 'principal'), ctrl.removeGradeSubject);
 
+// ── Grading Scale Routes ────────────────────────────────────────────────
+router.get('/grading-scale', examCtrl.getGradingScale);
+router.put('/grading-scale', authorize('school_admin', 'admin', 'principal'), examCtrl.saveGradingScale);
 
 module.exports = router;
+
+
+
