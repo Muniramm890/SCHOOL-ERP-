@@ -30,12 +30,15 @@ exports.listExamGroups = async (req, res, next) => {
 
 // ═══════════════════════════════════════════════════════════════
 // POST /api/results/compute/:examGroupId
-// UPDATED LOGIC: Excludes 'is_grade_only' subjects from Percentage & Rank
+// FIXED: Section-wise calculation & NULL constraint fix for DB
 // ═══════════════════════════════════════════════════════════════
 exports.computeResults = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
     const { examGroupId } = req.params;
+    const { section_id } = req.body; // 🔴 Bring back section_id from Frontend
+
+    if (!section_id) return badRequest(res, 'section_id is required in body');
 
     const examGroup = await queryOne(
       `SELECT id, academic_year_id FROM exam_groups WHERE id=@id AND school_id=@sid AND deleted_at IS NULL`,
@@ -43,27 +46,18 @@ exports.computeResults = async (req, res, next) => {
     );
     if (!examGroup) return notFound(res, 'Exam group not found');
 
-    const secRows = await query(
-      `SELECT section_id FROM exam_sections WHERE exam_group_id=@egId AND school_id=@sid`,
-      { egId: { type: sql.UniqueIdentifier, value: examGroupId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
-    );
-    const sectionIds = secRows.recordset.map((r) => r.section_id);
-    if (!sectionIds.length) return badRequest(res, 'No sections configured for this exam');
-
-    // 🔴 UPDATE 1: Added 'is_grade_only' to the query
+    // Fetch subjects ONLY for this specific section
     const esRows = await query(
       `SELECT id AS exam_subject_id, section_id, subject_id, max_marks, passing_marks, is_grade_only
-       FROM exam_subjects WHERE exam_group_id=@egId AND school_id=@sid AND deleted_at IS NULL`,
-      { egId: { type: sql.UniqueIdentifier, value: examGroupId }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+       FROM exam_subjects WHERE exam_group_id=@egId AND section_id=@secId AND school_id=@sid AND deleted_at IS NULL`,
+      { 
+        egId: { type: sql.UniqueIdentifier, value: examGroupId }, 
+        secId: { type: sql.UniqueIdentifier, value: section_id }, 
+        sid: { type: sql.UniqueIdentifier, value: schoolId } 
+      }
     );
     const examSubjects = esRows.recordset;
-    if (!examSubjects.length) return badRequest(res, 'No subjects configured for this exam');
-
-    const subjectsBySection = {};
-    examSubjects.forEach((es) => {
-      if (!subjectsBySection[es.section_id]) subjectsBySection[es.section_id] = [];
-      subjectsBySection[es.section_id].push(es);
-    });
+    if (!examSubjects.length) return badRequest(res, 'No subjects configured for this class/section');
 
     const gsRows = await query(
       `SELECT grade_label, min_percent, max_percent FROM grading_scale WHERE school_id=@sid ORDER BY sort_order`,
@@ -82,7 +76,6 @@ exports.computeResults = async (req, res, next) => {
       return `@es${i}`;
     });
     
-    // 🔴 UPDATE 2: Added 'grade_obtained' to the query
     const marksRows = await query(
       `SELECT exam_subject_id, student_id, marks_obtained, grade_obtained, status
        FROM exam_marks WHERE exam_subject_id IN (${idNames.join(',')})`,
@@ -95,105 +88,89 @@ exports.computeResults = async (req, res, next) => {
     });
 
     const computedRows = [];
+    
+    // MaxTotal exclusively from Scholastic subjects
+    const maxTotal = examSubjects
+      .filter(s => !s.is_grade_only)
+      .reduce((s, x) => s + Number(x.max_marks), 0);
 
-    for (const sectionId of sectionIds) {
-      const subjectsHere = subjectsBySection[sectionId] || [];
-      if (!subjectsHere.length) continue;
-      
-      // 🔴 UPDATE 3: Calculate maxTotal strictly from Scholastic subjects
-      const maxTotal = subjectsHere
-        .filter(s => !s.is_grade_only)
-        .reduce((s, x) => s + Number(x.max_marks), 0);
-
-      const enrolRows = await query(
-        `SELECT student_id FROM enrolments
-         WHERE section_id=@secId AND school_id=@sid AND academic_year_id=@ayId AND is_active=1 AND deleted_at IS NULL`,
-        {
-          secId: { type: sql.UniqueIdentifier, value: sectionId },
-          sid: { type: sql.UniqueIdentifier, value: schoolId },
-          ayId: { type: sql.UniqueIdentifier, value: examGroup.academic_year_id },
-        }
-      );
-
-      for (const { student_id } of enrolRows.recordset) {
-        const studentMarks = marksByStudentSubject[student_id] || {};
-        let enteredCount = 0;
-        let totalMarks = 0;
-        let anyFail = false;
-
-        for (const es of subjectsHere) {
-          const row = studentMarks[es.exam_subject_id];
-          
-          // 🔴 UPDATE 4: Check completeness logic (marks vs grades)
-          if (!row) continue;
-          if (row.status === 'present') {
-              if (es.is_grade_only && !row.grade_obtained) continue; 
-              if (!es.is_grade_only && (row.marks_obtained === null || row.marks_obtained === undefined)) continue;
-          }
-          
-          enteredCount++;
-
-          // 🔴 UPDATE 5: Result Computation Logic
-          if (es.is_grade_only) {
-            // Only affects Pass/Fail if absent, doesn't affect total marks
-            if (row.status === 'absent') anyFail = true;
-          } else {
-            const obtained = Number(row.marks_obtained);
-            totalMarks += obtained;
-            if (row.status === 'absent' || obtained < Number(es.passing_marks)) {
-              anyFail = true;
-            }
-          }
-        }
-
-        if (enteredCount < subjectsHere.length) {
-          computedRows.push({
-            student_id, section_id: sectionId,
-            total_marks: null, max_total: maxTotal, percentage: null,
-            grade: null, status: 'incomplete',
-          });
-          continue;
-        }
-
-        const percentage = maxTotal > 0 ? (totalMarks / maxTotal) * 100 : 0;
-        computedRows.push({
-          student_id, section_id: sectionId,
-          total_marks: totalMarks, max_total: maxTotal,
-          percentage: Math.round(percentage * 100) / 100,
-          grade: resolveGrade(percentage),
-          status: anyFail ? 'fail' : 'pass',
-        });
+    const enrolRows = await query(
+      `SELECT student_id FROM enrolments
+       WHERE section_id=@secId AND school_id=@sid AND academic_year_id=@ayId AND is_active=1 AND deleted_at IS NULL`,
+      {
+        secId: { type: sql.UniqueIdentifier, value: section_id },
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+        ayId: { type: sql.UniqueIdentifier, value: examGroup.academic_year_id },
       }
+    );
+
+    for (const { student_id } of enrolRows.recordset) {
+      const studentMarks = marksByStudentSubject[student_id] || {};
+      let enteredCount = 0;
+      let totalMarks = 0;
+      let anyFail = false;
+
+      for (const es of examSubjects) {
+        const row = studentMarks[es.exam_subject_id];
+        
+        if (!row) continue;
+        if (row.status === 'present') {
+            if (es.is_grade_only && !row.grade_obtained) continue; 
+            if (!es.is_grade_only && (row.marks_obtained === null || row.marks_obtained === undefined)) continue;
+        }
+        
+        enteredCount++;
+
+        if (es.is_grade_only) {
+          if (row.status === 'absent') anyFail = true;
+        } else {
+          const obtained = Number(row.marks_obtained);
+          totalMarks += obtained;
+          if (row.status === 'absent' || obtained < Number(es.passing_marks)) {
+            anyFail = true;
+          }
+        }
+      }
+
+      // Incomplete Result Logic
+      if (enteredCount < examSubjects.length) {
+        computedRows.push({
+          student_id, section_id,
+          total_marks: totalMarks, // 🔴 Bug Fix: Assign current total instead of NULL
+          max_total: maxTotal, 
+          percentage: 0,           // 🔴 Bug Fix: 0 instead of NULL
+          grade: null, status: 'incomplete',
+        });
+        continue;
+      }
+
+      const percentage = maxTotal > 0 ? (totalMarks / maxTotal) * 100 : 0;
+      computedRows.push({
+        student_id, section_id,
+        total_marks: totalMarks, max_total: maxTotal,
+        percentage: Math.round(percentage * 100) / 100,
+        grade: resolveGrade(percentage),
+        status: anyFail ? 'fail' : 'pass',
+      });
     }
 
-    // Ranking Logic (Unchanged)
-    const ranked = computedRows.filter((r) => r.percentage !== null);
-    const bySection = {};
-    ranked.forEach((r) => { (bySection[r.section_id] = bySection[r.section_id] || []).push(r); });
-    Object.values(bySection).forEach((list) => {
-      list.sort((a, b) => b.percentage - a.percentage);
-      let rank = 0, prevPct = null;
-      list.forEach((r, idx) => {
-        if (r.percentage !== prevPct) rank = idx + 1;
-        r.class_rank = rank;
-        prevPct = r.percentage;
-      });
+    // Ranking Logic (Only for complete results)
+    const ranked = computedRows.filter((r) => r.status !== 'incomplete');
+    ranked.sort((a, b) => b.percentage - a.percentage);
+    let rank = 0, prevPct = null;
+    ranked.forEach((r, idx) => {
+      if (r.percentage !== prevPct) rank = idx + 1;
+      r.class_rank = rank;
+      prevPct = r.percentage;
     });
 
-    const schoolSorted = [...ranked].sort((a, b) => b.percentage - a.percentage);
-    let srank = 0, prevSPct = null;
-    schoolSorted.forEach((r) => {
-      if (r.percentage !== prevSPct) srank++;
-      r.school_rank = srank;
-      prevSPct = r.percentage;
-    });
-
-    // DB Transaction (Unchanged)
     await withTransaction(async (tx) => {
+      // 🔴 Delete only for THIS specific section, not the whole exam
       const rDel = tx.request();
       rDel.input('egId', sql.UniqueIdentifier, examGroupId);
+      rDel.input('secId', sql.UniqueIdentifier, section_id);
       rDel.input('sid', sql.UniqueIdentifier, schoolId);
-      await rDel.query(`DELETE FROM exam_results WHERE exam_group_id=@egId AND school_id=@sid`);
+      await rDel.query(`DELETE FROM exam_results WHERE exam_group_id=@egId AND section_id=@secId AND school_id=@sid`);
 
       for (const r of computedRows) {
         const req2 = tx.request();
@@ -201,18 +178,18 @@ exports.computeResults = async (req, res, next) => {
         req2.input('egId', sql.UniqueIdentifier, examGroupId);
         req2.input('secId', sql.UniqueIdentifier, r.section_id);
         req2.input('stuId', sql.UniqueIdentifier, r.student_id);
-        req2.input('total', sql.Decimal(10, 2), r.total_marks);
-        req2.input('maxTotal', sql.Decimal(10, 2), r.max_total);
-        req2.input('pct', sql.Decimal(5, 2), r.percentage);
-        req2.input('grade', sql.VarChar(10), r.grade);
+        // 🔴 NULL FIX: Using fallback || 0 for DB constraints
+        req2.input('total', sql.Decimal(10, 2), r.total_marks || 0);
+        req2.input('maxTotal', sql.Decimal(10, 2), r.max_total || 0);
+        req2.input('pct', sql.Decimal(5, 2), r.percentage || 0);
+        req2.input('grade', sql.VarChar(10), r.grade || null);
         req2.input('crank', sql.Int, r.class_rank || null);
-        req2.input('srank', sql.Int, r.school_rank || null);
         req2.input('status', sql.VarChar(20), r.status);
         await req2.query(
           `INSERT INTO exam_results
-             (id, exam_group_id, section_id, student_id, school_id, total_marks, max_total, percentage, grade, class_rank, school_rank, status, computed_at)
+             (id, exam_group_id, section_id, student_id, school_id, total_marks, max_total, percentage, grade, class_rank, status, computed_at)
            VALUES
-             (NEWID(), @egId, @secId, @stuId, @sid, @total, @maxTotal, @pct, @grade, @crank, @srank, @status, GETUTCDATE())`
+             (NEWID(), @egId, @secId, @stuId, @sid, @total, @maxTotal, @pct, @grade, @crank, @status, GETUTCDATE())`
         );
       }
     });
