@@ -442,7 +442,7 @@ exports.getResults = async (req, res, next) => {
 
     // 🔴 FIX: Select grade_obtained as well
     const marksRes = await query(`
-      SELECT em.student_id, em.exam_subject_id, em.marks_obtained, em.grade_obtained, exs.is_grade_only
+      SELECT em.student_id, em.exam_subject_id, em.marks_obtained, em.grade_obtained, em.status, exs.is_grade_only
       FROM exam_marks em
       JOIN exam_subjects exs ON exs.id = em.exam_subject_id
       WHERE exs.exam_group_id=@eid AND exs.section_id=@secid
@@ -451,8 +451,12 @@ exports.getResults = async (req, res, next) => {
     const marksMap = {};
     marksRes.recordset.forEach((m) => {
       if (!marksMap[m.student_id]) marksMap[m.student_id] = {};
-      // 🔴 FIX: Send grade if it's a grade-only subject, else send marks
-      marksMap[m.student_id][m.exam_subject_id] = m.is_grade_only ? m.grade_obtained : m.marks_obtained;
+      // 🔴 FIX: Send an object containing both value (marks/grade) and status (present/absent/leave/tc)
+      const val = m.is_grade_only ? m.grade_obtained : m.marks_obtained;
+      marksMap[m.student_id][m.exam_subject_id] = {
+        val: m.status !== 'present' ? m.status.toUpperCase() : val,
+        status: m.status || 'present'
+      };
     });
 
     const rows = resultsRes.recordset.map((r) => ({ ...r, marks: marksMap[r.student_id] || {} }));
