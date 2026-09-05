@@ -367,6 +367,9 @@ exports.getSectionResults = async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════
 // GET /api/results/subject-wise?exam_group_id=
 // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// GET /api/results/subject-wise?exam_group_id=
+// ═══════════════════════════════════════════════════════════════
 exports.getSubjectWise = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -374,28 +377,30 @@ exports.getSubjectWise = async (req, res, next) => {
     if (!exam_group_id) return badRequest(res, 'exam_group_id is required');
 
     const result = await query(
-      `SELECT s.id AS subject_id, s.name AS subject_name,
+      `SELECT s.id AS subject_id, s.name AS subject_name, es.is_grade_only,
               COUNT(em.id) AS total_attempted,
               SUM(CASE WHEN em.status='absent' THEN 1 ELSE 0 END) AS absent_count,
-              SUM(CASE WHEN em.status<>'absent' AND em.marks_obtained >= es.passing_marks THEN 1 ELSE 0 END) AS pass_count,
-              AVG(CASE WHEN em.status<>'absent' AND em.marks_obtained IS NOT NULL
-                        THEN (em.marks_obtained / es.max_marks) * 100 END) AS avg_percentage,
-              MAX(CASE WHEN em.status<>'absent' THEN em.marks_obtained END) AS highest_marks,
-              MIN(CASE WHEN em.status<>'absent' THEN em.marks_obtained END) AS lowest_marks
+              SUM(CASE WHEN em.status<>'absent' AND es.is_grade_only = 0 AND em.marks_obtained >= es.passing_marks THEN 1 ELSE 0 END) AS pass_count,
+              -- 🔴 FIX: Prevent Divide by Zero by filtering is_grade_only = 0
+              AVG(CASE WHEN em.status<>'absent' AND em.marks_obtained IS NOT NULL AND es.is_grade_only = 0
+                       THEN (em.marks_obtained / es.max_marks) * 100 END) AS avg_percentage,
+              MAX(CASE WHEN em.status<>'absent' AND es.is_grade_only = 0 THEN em.marks_obtained END) AS highest_marks,
+              MIN(CASE WHEN em.status<>'absent' AND es.is_grade_only = 0 THEN em.marks_obtained END) AS lowest_marks
        FROM exam_subjects es
        JOIN subjects s ON s.id = es.subject_id
        LEFT JOIN exam_marks em ON em.exam_subject_id = es.id
        WHERE es.exam_group_id=@egId AND es.school_id=@sid AND es.deleted_at IS NULL
-       GROUP BY s.id, s.name
+       GROUP BY s.id, s.name, es.is_grade_only
        ORDER BY s.name`,
       { egId: { type: sql.UniqueIdentifier, value: exam_group_id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
+    
     const rows = result.recordset.map((r) => {
       const attemptedPresent = (r.total_attempted || 0) - (r.absent_count || 0);
       return {
         ...r,
         avg_percentage: r.avg_percentage ? Math.round(r.avg_percentage * 100) / 100 : 0,
-        pass_percent: attemptedPresent > 0 ? Math.round((r.pass_count / attemptedPresent) * 10000) / 100 : 0,
+        pass_percent: (attemptedPresent > 0 && !r.is_grade_only) ? Math.round((r.pass_count / attemptedPresent) * 10000) / 100 : 0,
       };
     });
     return success(res, rows, 'Subject-wise analysis fetched');
@@ -404,9 +409,8 @@ exports.getSubjectWise = async (req, res, next) => {
 
 // ═══════════════════════════════════════════════════════════════
 // GET /api/results/teacher-wise?exam_group_id=
-// Uses timetable_entries to resolve WHICH teacher actually taught
-// each (section, subject) combo — the real assignment, not just
-// the school-wide teacher pool.
+// ═══════════════════════════════════════════════════════════════
+// GET /api/results/teacher-wise?exam_group_id=
 // ═══════════════════════════════════════════════════════════════
 exports.getTeacherWise = async (req, res, next) => {
   try {
@@ -416,33 +420,32 @@ exports.getTeacherWise = async (req, res, next) => {
 
     const result = await query(
       `SELECT u.id AS teacher_user_id, u.full_name AS teacher_name, s.name AS subject_name,
-              g.name AS grade_name, sec.name AS section_name,
+              g.name AS grade_name, sec.name AS section_name, es.is_grade_only,
               COUNT(em.id) AS total_attempted,
-              SUM(CASE WHEN em.status<>'absent' AND em.marks_obtained >= es.passing_marks THEN 1 ELSE 0 END) AS pass_count,
-              AVG(CASE WHEN em.status<>'absent' AND em.marks_obtained IS NOT NULL
-                        THEN (em.marks_obtained / es.max_marks) * 100 END) AS avg_percentage
+              SUM(CASE WHEN em.status<>'absent' AND es.is_grade_only = 0 AND em.marks_obtained >= es.passing_marks THEN 1 ELSE 0 END) AS pass_count,
+              -- 🔴 FIX: Prevent Divide by Zero
+              AVG(CASE WHEN em.status<>'absent' AND em.marks_obtained IS NOT NULL AND es.is_grade_only = 0
+                       THEN (em.marks_obtained / es.max_marks) * 100 END) AS avg_percentage
        FROM exam_subjects es
        JOIN subjects s ON s.id = es.subject_id
        JOIN sections sec ON sec.id = es.section_id
        JOIN grades g ON g.id = sec.grade_id
        LEFT JOIN exam_marks em ON em.exam_subject_id = es.id
        OUTER APPLY (
-         SELECT TOP 1 te.teacher_id
-         FROM timetable_entries te
+         SELECT TOP 1 te.teacher_id FROM timetable_entries te
          WHERE te.section_id = es.section_id AND te.subject_id = es.subject_id AND te.school_id = es.school_id
-         GROUP BY te.teacher_id
-         ORDER BY COUNT(*) DESC
+         GROUP BY te.teacher_id ORDER BY COUNT(*) DESC
        ) assigned
        JOIN users u ON u.id = assigned.teacher_id
        WHERE es.exam_group_id=@egId AND es.school_id=@sid AND es.deleted_at IS NULL
-       GROUP BY u.id, u.full_name, s.name, g.name, sec.name
+       GROUP BY u.id, u.full_name, s.name, g.name, sec.name, es.is_grade_only
        ORDER BY u.full_name`,
       { egId: { type: sql.UniqueIdentifier, value: exam_group_id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
     const rows = result.recordset.map((r) => ({
       ...r,
       avg_percentage: r.avg_percentage ? Math.round(r.avg_percentage * 100) / 100 : 0,
-      pass_percent: r.total_attempted ? Math.round((r.pass_count / r.total_attempted) * 10000) / 100 : 0,
+      pass_percent: (r.total_attempted && !r.is_grade_only) ? Math.round((r.pass_count / r.total_attempted) * 10000) / 100 : 0,
     }));
     return success(res, rows, 'Teacher-wise analysis fetched');
   } catch (err) { next(err); }
