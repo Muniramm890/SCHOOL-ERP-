@@ -77,4 +77,14 @@ const requireSchool = (req, res, next) => {
   next();
 };
 
-module.exports = { authenticate, authorize, requireSchool };
+// Future use: per-module permission gate (not wired into any routes yet).
+// school_admin (top authority) always passes; everyone else needs the
+// moduleKey inside their school_members.permissions.modules array.
+const authorizeModule = (moduleKey) => (req, res, next) => {
+  if (req.user.role === 'school_admin') return next();
+  const allowed = Array.isArray(req.user.permissions?.modules) ? req.user.permissions.modules : [];
+  if (allowed.includes(moduleKey)) return next();
+  return forbidden(res, `Access denied. You do not have access to the '${moduleKey}' module.`);
+};
+
+module.exports = { authenticate, authorize, requireSchool, authorizeModule };
