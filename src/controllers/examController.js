@@ -221,6 +221,10 @@ exports.getDatesheet = async (req, res, next) => {
 };
 
 // PUT /api/exams/:id/datesheet
+// ═══════════════════════════════════════════════════════════════
+// PUT /api/exams/:id/datesheet
+// FIXED: UPSERT Logic to prevent Marks Data Loss
+// ═══════════════════════════════════════════════════════════════
 exports.saveDatesheet = async (req, res, next) => {
   try {
     const { schoolId } = req.user;
@@ -231,32 +235,63 @@ exports.saveDatesheet = async (req, res, next) => {
     if (!Array.isArray(entries)) return badRequest(res, 'entries must be an array');
 
     await withTransaction(async (tx) => {
+      
+      // 🔴 STEP 1: SOFT DELETE all existing subjects for this section. 
+      // (This handles unchecked subjects without breaking foreign keys in exam_marks)
       const rDel = tx.request();
       rDel.input('sid', sql.UniqueIdentifier, schoolId);
       rDel.input('eid', sql.UniqueIdentifier, id);
       rDel.input('secid', sql.UniqueIdentifier, section_id);
-      await rDel.query(
-        `DELETE FROM exam_subjects WHERE school_id=@sid AND exam_group_id=@eid AND section_id=@secid`
-      );
+      await rDel.query(`
+        UPDATE exam_subjects 
+        SET deleted_at = GETUTCDATE() 
+        WHERE school_id=@sid AND exam_group_id=@eid AND section_id=@secid
+      `);
 
+      // 🔴 STEP 2: UPSERT (Update existing to reactivate, or Insert new)
       for (const e of entries) {
-        const r = tx.request();
-        r.input('sid', sql.UniqueIdentifier, schoolId);
-        r.input('eid', sql.UniqueIdentifier, id);
-        r.input('secid', sql.UniqueIdentifier, section_id);
-        r.input('subid', sql.UniqueIdentifier, e.subject_id);
-        r.input('edate', sql.Date, e.exam_date || null);
-        r.input('stime', sql.VarChar(8), e.start_time ? `${e.start_time}:00`.slice(0, 8) : '09:00:00');
-        r.input('dur', sql.SmallInt, Number(e.duration_minutes) || 120);
-        r.input('maxm', sql.Decimal(6, 2), e.is_grade_only ? 0 : (Number(e.max_marks) || 100));
-        r.input('passm', sql.Decimal(6, 2), e.is_grade_only ? 0 : (Number(e.passing_marks) || 33));
-        r.input('isgrade', sql.Bit, e.is_grade_only ? 1 : 0);
+        const rFind = tx.request();
+        rFind.input('sid', sql.UniqueIdentifier, schoolId);
+        rFind.input('eid', sql.UniqueIdentifier, id);
+        rFind.input('secid', sql.UniqueIdentifier, section_id);
+        rFind.input('subid', sql.UniqueIdentifier, e.subject_id);
 
-        await r.query(`
-          INSERT INTO exam_subjects
-            (id, school_id, exam_group_id, section_id, subject_id, exam_date, start_time, duration_minutes, max_marks, passing_marks, is_grade_only)
-          VALUES (NEWID(), @sid, @eid, @secid, @subid, @edate, @stime, @dur, @maxm, @passm, @isgrade)
+        // Check if subject was ever scheduled before
+        const existing = await rFind.query(`
+          SELECT id FROM exam_subjects 
+          WHERE school_id=@sid AND exam_group_id=@eid AND section_id=@secid AND subject_id=@subid
         `);
+
+        const rUpd = tx.request();
+        rUpd.input('sid', sql.UniqueIdentifier, schoolId);
+        rUpd.input('eid', sql.UniqueIdentifier, id);
+        rUpd.input('secid', sql.UniqueIdentifier, section_id);
+        rUpd.input('subid', sql.UniqueIdentifier, e.subject_id);
+        rUpd.input('edate', sql.Date, e.exam_date || null);
+        rUpd.input('stime', sql.VarChar(8), e.start_time ? `${e.start_time}:00`.slice(0, 8) : '09:00:00');
+        rUpd.input('dur', sql.SmallInt, Number(e.duration_minutes) || 120);
+        rUpd.input('maxm', sql.Decimal(6, 2), e.is_grade_only ? 0 : (Number(e.max_marks) || 100));
+        rUpd.input('passm', sql.Decimal(6, 2), e.is_grade_only ? 0 : (Number(e.passing_marks) || 33));
+        rUpd.input('isgrade', sql.Bit, e.is_grade_only ? 1 : 0);
+
+        if (existing.recordset.length > 0) {
+          // UPDATE & RESTORE: Bring back the old ID and wipe deleted_at
+          rUpd.input('recordId', sql.UniqueIdentifier, existing.recordset[0].id);
+          await rUpd.query(`
+            UPDATE exam_subjects
+            SET exam_date=@edate, start_time=@stime, duration_minutes=@dur, 
+                max_marks=@maxm, passing_marks=@passm, is_grade_only=@isgrade, 
+                updated_at=GETUTCDATE(), deleted_at=NULL
+            WHERE id=@recordId
+          `);
+        } else {
+          // INSERT: Brand new subject scheduling
+          await rUpd.query(`
+            INSERT INTO exam_subjects
+              (id, school_id, exam_group_id, section_id, subject_id, exam_date, start_time, duration_minutes, max_marks, passing_marks, is_grade_only)
+            VALUES (NEWID(), @sid, @eid, @secid, @subid, @edate, @stime, @dur, @maxm, @passm, @isgrade)
+          `);
+        }
       }
     });
 
