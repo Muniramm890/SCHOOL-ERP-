@@ -96,6 +96,7 @@ app.use(`${API}/notices`,       require('./routes/notices'));
 app.use(`${API}/homework`,      require('./routes/homework'));
 app.use('/api/attendance',authenticate,   require('./routes/attendance'));
 app.use(`${API}/audit`, require('./routes/audit'));
+app.use(`${API}/admin/users`, require('./routes/userManagement'));
 
 // ── 404 ────────────────────────────────────────────────────────────────
 app.use((req, res) => {
