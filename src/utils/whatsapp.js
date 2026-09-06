@@ -11,7 +11,7 @@ const sendWhatsAppOtp = async (phone, otp) => {
     logger.warn(`⚠️ WhatsApp credentials missing. OTP for ${phone} is: ${otp}`);
     return true; 
   }
-
+ //     
   const payload = {
     messaging_product: "whatsapp",
     to: `91${phone}`, // India country code prefixed
