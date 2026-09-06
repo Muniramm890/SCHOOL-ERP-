@@ -24,5 +24,6 @@ router.get('/toppers',                    ctrl.getToppers);            // ?exam_
 // ── Student-specific views ───────────────────────────────────────────────
 router.get('/student/:studentId/trend',       ctrl.getStudentTrend);       // across all exams
 router.get('/student/:studentId/report-card', ctrl.getStudentReportCard);  // ?exam_group_id=
+router.get('/student/:studentId/report-card/pdf', ctrl.downloadReportCardPdf); // ?exam_group_id=
 
 module.exports = router;
