@@ -28,6 +28,7 @@ router.post('/signup/register',   signupCtrl.registerSchool);
 
 // ── Protected Routes ───────────────────────────────────────────────────
 router.get('/me',               authenticate, ctrl.me);
+router.put('/me',                authenticate, ctrl.updateProfile);
 router.post('/change-password', authenticate, ctrl.changePassword);
 
 module.exports = router;
