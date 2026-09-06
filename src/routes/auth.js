@@ -4,7 +4,7 @@ const ctrl   = require('../controllers/authController');
 const signupCtrl = require('../controllers/signupController'); 
 const { authenticate } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit'); // 
-const forgotPasswordCtrl = require('../controllers/forgotPasswordController')
+const forgotPasswordCtrl = require('../controllers/forgotPasswordController');
 
 // ── Security: OTP Rate Limiter ─────────────────────────────────────────
 // 10 मिनट के अंदर एक IP से अधिकतम 3 बार OTP मंगाया जा सकता है (Spam रोकने के लिए)
@@ -27,7 +27,7 @@ router.post('/signup/verify-otp', signupCtrl.verifyOtp);
 router.post('/signup/register',   signupCtrl.registerSchool);
 
 // ── Forgot Password (WhatsApp or Email OTP) ─────────────────────────────
-const forgotPasswordCtrl = require('../controllers/forgotPasswordController');
+
 router.post('/forgot-password/send-otp',   otpLimiter, forgotPasswordCtrl.sendResetOtp);
 router.post('/forgot-password/verify-otp', forgotPasswordCtrl.verifyResetOtp);
 router.post('/forgot-password/reset',      forgotPasswordCtrl.resetPassword);
