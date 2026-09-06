@@ -2,6 +2,7 @@
 const sql = require('mssql');
 const { query, queryOne, withTransaction } = require('../config/db');
 const { success, created, notFound, badRequest } = require('../utils/response');
+const { generateStudentReportCardPdf } = require('../services/resultCardService');
 
 // ═══════════════════════════════════════════════════════════════
 // GET /api/results/exam-groups
@@ -516,5 +517,22 @@ exports.getStudentReportCard = async (req, res, next) => {
     );
 
     return success(res, { ...overall, subjects: subjects.recordset }, 'Report card fetched');
+  } catch (err) { next(err); }
+};
+
+
+
+// ═══════════════════════════════════════════════════════════════
+// GET /api/results/student/:studentId/report-card/pdf?exam_group_id=
+// ═══════════════════════════════════════════════════════════════
+exports.downloadReportCardPdf = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { studentId } = req.params;
+    const { exam_group_id } = req.query;
+    if (!exam_group_id) return badRequest(res, 'exam_group_id is required');
+
+    const url = await generateStudentReportCardPdf(schoolId, studentId, exam_group_id);
+    return success(res, { url }, 'Report card PDF generated');
   } catch (err) { next(err); }
 };
