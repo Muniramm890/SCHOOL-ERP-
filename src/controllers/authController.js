@@ -135,6 +135,61 @@ exports.me = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// ── PUT /api/auth/me ────────────────────────────────────────────────────────
+exports.updateProfile = async (req, res, next) => {
+  try {
+    const { fullName, displayName, phone, avatarUrl, dateOfBirth, gender } = req.body;
+
+    // Whitelisted fields only — email, role, id, permissions cannot be changed here
+    await query(`
+      UPDATE users SET
+        full_name = COALESCE(@fullName, full_name),
+        display_name = COALESCE(@displayName, display_name),
+        phone = COALESCE(@phone, phone),
+        avatar_url = COALESCE(@avatarUrl, avatar_url),
+        date_of_birth = COALESCE(@dateOfBirth, date_of_birth),
+        gender = COALESCE(@gender, gender)
+      WHERE id = @userId AND deleted_at IS NULL
+    `, {
+      fullName: { type: sql.NVarChar(255), value: fullName || null },
+      displayName: { type: sql.NVarChar(255), value: displayName || null },
+      phone: { type: sql.NVarChar(20), value: phone || null },
+      avatarUrl: { type: sql.NVarChar(sql.MAX), value: avatarUrl || null },
+      dateOfBirth: { type: sql.Date, value: dateOfBirth || null },
+      gender: { type: sql.NVarChar(20), value: gender || null },
+      userId: { type: sql.UniqueIdentifier, value: req.user.userId }
+    });
+
+    // Return the freshly updated profile, same shape as GET /me
+    const user = await queryOne(`
+      SELECT u.id, u.full_name, u.display_name, u.email, u.phone, u.avatar_url,
+             u.date_of_birth, u.gender, u.last_login_at,
+             sm.role, sm.permissions, sm.employee_code,
+             s.id AS school_id, s.name AS school_name, s.slug AS school_code, s.logo_url
+      FROM users u
+      JOIN school_members sm ON sm.user_id = u.id AND sm.school_id = @schoolId
+      JOIN schools s ON s.id = sm.school_id
+      WHERE u.id = @userId AND u.deleted_at IS NULL
+    `, {
+      userId: { type: sql.UniqueIdentifier, value: req.user.userId },
+      schoolId: { type: sql.UniqueIdentifier, value: req.user.schoolId }
+    });
+
+    if (user.permissions) user.permissions = JSON.parse(user.permissions);
+
+    await logAudit({
+      schoolId: req.user.schoolId,
+      userId: req.user.userId,
+      userName: user.full_name,
+      userRole: req.user.role,
+      actionType: 'PROFILE_UPDATED',
+      details: { fields: Object.keys(req.body) },
+    });
+
+    return success(res, user, 'Profile updated successfully');
+  } catch (err) { next(err); }
+};
+
 // ── POST /api/auth/change-password ────────────────────────────────────────
 exports.changePassword = async (req, res, next) => {
   try {
