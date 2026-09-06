@@ -250,7 +250,7 @@ exports.updateSchool = async (req, res, next) => {
       watermark_url: sql.NVarChar(sql.MAX),
       brand_color: sql.VarChar(10), affiliation_board: sql.NVarChar(100), affiliation_no: sql.NVarChar(100),
       udise_code: sql.NVarChar(100), address_line1: sql.NVarChar(500), address_line2: sql.NVarChar(500),
-      city: sql.NVarChar(100), state: sql.NVarChar(100), pincode: sql.VarChar(6),, phone: sql.NVarChar(50),
+      city: sql.NVarChar(100), state: sql.NVarChar(100), pincode: sql.VarChar(6), phone: sql.NVarChar(50),
       email: sql.NVarChar(255), website: sql.NVarChar(255), principal_name: sql.NVarChar(255),
       established_year: sql.SmallInt, timezone: sql.NVarChar(100), academic_year_start: sql.SmallInt,
       academic_year_end: sql.SmallInt, working_days: sql.NVarChar(sql.MAX), periods_per_day: sql.SmallInt,
