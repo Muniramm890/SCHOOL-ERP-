@@ -25,5 +25,6 @@ router.get('/toppers',                    ctrl.getToppers);            // ?exam_
 router.get('/student/:studentId/trend',       ctrl.getStudentTrend);       // across all exams
 router.get('/student/:studentId/report-card', ctrl.getStudentReportCard);  // ?exam_group_id=
 router.get('/student/:studentId/report-card/pdf', ctrl.downloadReportCardPdf); // ?exam_group_id=
+router.get('/report-cards/bulk', ctrl.downloadBulkReportCards); // ?section_id=&exam_group_id=
 
 module.exports = router;
