@@ -55,153 +55,194 @@ async function buildReportCardPdf(data) {
 // ── DRAWS ONE REPORT CARD PAGE ONTO AN EXISTING DOC (reused for bulk) ──
 async function drawReportCardPage(doc, { school, student, guardian, examName, overall, subjects, gradingScale }) {
   const brandColor = school.brand_color || '#E8600A';
+  const PAGE_W = 555; // 595 - margin*2 (approx usable)
+  const LEFT = 30;
 
-  doc.rect(20, 20, 555, 802).lineWidth(3).stroke('#000');
-  doc.rect(25, 25, 545, 792).lineWidth(1).stroke('#000');
+  // ── Outer rounded border ──
+  doc.roundedRect(20, 20, 555, 802, 10).lineWidth(1.5).stroke('#1e293b');
 
+  // ── Watermark (only if uploaded) ──
   const wmBuf = await fetchImageBuffer(school.watermark_url || school.logo_url);
   if (wmBuf) {
-    try { doc.save(); doc.globalAlpha(0.06); doc.image(wmBuf, 147, 300, { fit: [300, 300] }); doc.restore(); } catch (e) {}
+    try { doc.save(); doc.globalAlpha(0.05); doc.image(wmBuf, 147, 320, { fit: [300, 300] }); doc.restore(); } catch (e) {}
   }
 
-  let y = 40;
+  let y = 34;
+
+  // ── HEADER: Logo (left) — School Name/Details (center) — Photo (right) ──
   const logoBuf = await fetchImageBuffer(school.logo_url);
   const photoBuf = await fetchImageBuffer(student.photo_url);
+  const headerTop = y;
+  const LOGO_SIZE = 58;
 
-  if (logoBuf) { try { doc.image(logoBuf, 40, y, { fit: [65, 65] }); } catch {} }
-  if (photoBuf) {
-    try { doc.image(photoBuf, 490, y, { fit: [65, 65] }); doc.rect(490, y, 65, 65).stroke('#000'); } catch {}
+  if (logoBuf) {
+    try { doc.image(logoBuf, LEFT + 4, headerTop, { fit: [LOGO_SIZE, LOGO_SIZE] }); } catch {}
   } else {
-    doc.rect(490, y, 65, 65).stroke('#000');
-    doc.fontSize(24).fillColor('#999').text((student.student_name?.[0] || '?').toUpperCase(), 490, y + 20, { width: 65, align: 'center' });
+    doc.roundedRect(LEFT + 4, headerTop, LOGO_SIZE, LOGO_SIZE, 8).stroke('#cbd5e1');
   }
 
-  const schoolName = (school.name || 'SCHOOL NAME').toUpperCase();
-  let nameFontSize = 22;
-  doc.font('Helvetica-Bold');
-  while (doc.fontSize(nameFontSize).widthOfString(schoolName) > 380 && nameFontSize > 10) nameFontSize -= 1;
-  doc.fillColor(brandColor).fontSize(nameFontSize).text(schoolName, 115, y + 4, { width: 365, align: 'center', lineBreak: false });
+  if (photoBuf) {
+    try {
+      doc.image(photoBuf, 555 - LOGO_SIZE, headerTop, { fit: [LOGO_SIZE, LOGO_SIZE] });
+      doc.roundedRect(555 - LOGO_SIZE, headerTop, LOGO_SIZE, LOGO_SIZE, 8).stroke(brandColor);
+    } catch {}
+  } else {
+    doc.roundedRect(555 - LOGO_SIZE, headerTop, LOGO_SIZE, LOGO_SIZE, 8).stroke(brandColor);
+    doc.fontSize(18).fillColor('#94a3b8').font('Helvetica-Bold')
+      .text((student.student_name?.[0] || '?').toUpperCase(), 555 - LOGO_SIZE, headerTop + 18, { width: LOGO_SIZE, align: 'center' });
+  }
 
-  let cy = doc.y + 4;
-  doc.fillColor('#333').fontSize(9).font('Helvetica-Bold')
-    .text(school.tagline || 'Education For Excellence', 115, cy, { width: 365, align: 'center' });
-  cy = doc.y + 3;
+  // ── Dynamic single-line school name (auto-shrink to fit center width) ──
+  const centerX = LEFT + LOGO_SIZE + 14;
+  const centerW = 555 - LOGO_SIZE * 2 - 28;
+  const schoolName = (school.name || 'SCHOOL NAME').toUpperCase();
+  let nameFontSize = 17;
+  doc.font('Helvetica-Bold');
+  while (doc.fontSize(nameFontSize).widthOfString(schoolName) > centerW && nameFontSize > 7) nameFontSize -= 0.5;
+  doc.fillColor(brandColor).fontSize(nameFontSize)
+    .text(schoolName, centerX, headerTop, { width: centerW, align: 'center', lineBreak: false });
+
+  let cy = doc.y + 2;
+  doc.fillColor('#334155').fontSize(7.5).font('Helvetica-Bold')
+    .text(school.tagline || 'Education For Excellence', centerX, cy, { width: centerW, align: 'center' });
+  cy = doc.y + 1;
 
   const address = [school.address_line1, school.city, school.state, school.pincode].filter(Boolean).join(', ');
-  if (address) { doc.fillColor('#555').fontSize(8).font('Helvetica').text(address, 115, cy, { width: 365, align: 'center' }); cy = doc.y + 2; }
-  const contact = [school.website, school.email, school.phone].filter(Boolean).join('   |   ');
-  if (contact) { doc.fillColor('#555').fontSize(8).text(contact, 115, cy, { width: 365, align: 'center' }); cy = doc.y + 2; }
+  if (address) {
+    doc.fillColor('#64748b').fontSize(6.5).font('Helvetica').text(address, centerX, cy, { width: centerW, align: 'center' });
+    cy = doc.y + 1;
+  }
+  const contact = [school.website, school.email, school.phone].filter(Boolean).join('  |  ');
+  if (contact) {
+    doc.fillColor('#64748b').fontSize(6.5).text(contact, centerX, cy, { width: centerW, align: 'center' });
+    cy = doc.y + 1;
+  }
   if (school.affiliation_board || school.affiliation_no) {
-    doc.fillColor('#777').fontSize(7).font('Helvetica-Bold')
-      .text([school.affiliation_board, school.affiliation_no].filter(Boolean).join(' · '), 115, cy, { width: 365, align: 'center' });
+    doc.fillColor('#94a3b8').fontSize(6).font('Helvetica-Bold')
+      .text([school.affiliation_board, school.affiliation_no].filter(Boolean).join(' · '), centerX, cy, { width: centerW, align: 'center' });
   }
 
-  y = Math.max(y + 75, doc.y + 10);
-  doc.moveTo(40, y).lineTo(555, y).lineWidth(2).strokeColor('#000').stroke();
+  y = headerTop + LOGO_SIZE + 10;
+  doc.moveTo(LEFT, y).lineTo(LEFT + PAGE_W, y).lineWidth(1.5).strokeColor(brandColor).stroke();
+  y += 8;
 
-  y += 12;
-  doc.rect(40, y, 515, 26).fillAndStroke('#f1f5f9', '#000');
-  doc.fillColor('#111').fontSize(14).font('Helvetica-Bold')
-    .text(`REPORT CARD${examName ? ' — ' + examName.toUpperCase() : ''}`, 40, y + 7, { width: 515, align: 'center' });
-  y += 40;
+  // ── TITLE BAR ──
+  doc.roundedRect(LEFT, y, PAGE_W, 20, 5).fill('#0f172a');
+  doc.fillColor('#fff').fontSize(11).font('Helvetica-Bold')
+    .text(`REPORT CARD${examName ? '  •  ' + examName.toUpperCase() : ''}`, LEFT, y + 5.5, { width: PAGE_W, align: 'center' });
+  y += 30;
 
-  const boxH = 95;
-  doc.rect(40, y, 515, boxH).lineWidth(1).stroke('#000');
-  doc.fontSize(9).fillColor('#222');
+  // ── STUDENT DETAILS (compact 2-col grid, rounded card) ──
+  const boxH = 68;
+  doc.roundedRect(LEFT, y, PAGE_W, boxH, 6).fillAndStroke('#f8fafc', '#e2e8f0');
+  doc.fontSize(8).fillColor('#1e293b');
 
   const rowsLeft = [
-    ['Name:', student.student_name],
-    ['Roll No:', student.roll_no || '-'],
-    ['Admission No:', student.admission_no || '-'],
-    ['Date of Birth:', student.date_of_birth ? new Date(student.date_of_birth).toLocaleDateString('en-IN') : '-'],
+    ['Name', student.student_name],
+    ['Roll No', student.roll_no || '-'],
+    ['Admission No', student.admission_no || '-'],
   ];
   const rowsRight = [
-    ['Class:', `${student.class_name || '-'} ${student.section_name || ''}`],
-    ['Gender:', student.gender || '-'],
-    ['Class Rank:', `#${overall.class_rank ?? '-'}`],
-    ['School Rank:', `#${overall.school_rank ?? '-'}`],
+    ['Class', `${student.class_name || '-'} ${student.section_name || ''}`],
+    ['Class Rank', `#${overall.class_rank ?? '-'}`],
+    ['School Rank', `#${overall.school_rank ?? '-'}`],
   ];
-  rowsLeft.forEach((r, i) => { doc.font('Helvetica').text(r[0], 50, y + 8 + i * 20, { continued: true }).font('Helvetica-Bold').text(' ' + r[1]); });
-  rowsRight.forEach((r, i) => { doc.font('Helvetica').text(r[0], 300, y + 8 + i * 20, { continued: true }).font('Helvetica-Bold').text(' ' + r[1]); });
-  if (guardian) {
-    doc.font('Helvetica').text('Guardian:', 50, y + 88, { continued: true })
-      .font('Helvetica-Bold').text(` ${guardian.full_name} (${guardian.relation}) — ${guardian.phone}`);
-  }
-  y += boxH + 15;
+  rowsLeft.forEach((r, i) => {
+    doc.font('Helvetica').fontSize(7.5).fillColor('#64748b').text(r[0].toUpperCase(), LEFT + 12, y + 8 + i * 18, { continued: false, width: 100 });
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f172a').text(r[1], LEFT + 12, y + 8 + i * 18 + 8, { width: 240 });
+  });
+  rowsRight.forEach((r, i) => {
+    doc.font('Helvetica').fontSize(7.5).fillColor('#64748b').text(r[0].toUpperCase(), LEFT + 290, y + 8 + i * 18, { width: 100 });
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#0f172a').text(r[1], LEFT + 290, y + 8 + i * 18 + 8, { width: 240 });
+  });
+  y += boxH + 10;
 
+  if (guardian) {
+    doc.roundedRect(LEFT, y, PAGE_W, 20, 5).fillAndStroke('#eff6ff', '#dbeafe');
+    doc.font('Helvetica').fontSize(8).fillColor('#1e40af')
+      .text(`Guardian:  ${guardian.full_name} (${guardian.relation})  —  ${guardian.phone}`, LEFT + 12, y + 6, { width: PAGE_W - 24 });
+    y += 28;
+  }
+
+  // ── SUBJECTS TABLES ──
   const scholastic = subjects.filter((s) => !s.is_grade_only);
   const coScholastic = subjects.filter((s) => s.is_grade_only);
 
   const drawTableHeader = (headers, widths, yy) => {
-    doc.rect(40, yy, 515, 22).fill(brandColor);
-    doc.fillColor('#fff').fontSize(9).font('Helvetica-Bold');
-    let x = 45;
-    headers.forEach((h, i) => { doc.text(h, x, yy + 6, { width: widths[i] }); x += widths[i]; });
-    return yy + 22;
+    doc.roundedRect(LEFT, yy, PAGE_W, 18, 4).fill(brandColor);
+    doc.fillColor('#fff').fontSize(7.5).font('Helvetica-Bold');
+    let x = LEFT + 8;
+    headers.forEach((h, i) => { doc.text(h, x, yy + 5, { width: widths[i] }); x += widths[i]; });
+    return yy + 18;
   };
 
   if (scholastic.length) {
-    doc.fontSize(10).fillColor('#111').font('Helvetica-Bold').text('ACADEMIC SUBJECTS', 40, y);
-    y += 16;
-    y = drawTableHeader(['Subject', 'Marks Obtained', 'Max Marks', 'Result'], [220, 110, 90, 90], y);
-    doc.font('Helvetica').fontSize(9);
+    doc.fontSize(8.5).fillColor('#0f172a').font('Helvetica-Bold').text('ACADEMIC SUBJECTS', LEFT, y);
+    y += 12;
+    y = drawTableHeader(['Subject', 'Marks', 'Max', 'Result'], [230, 110, 90, 90], y);
+    doc.font('Helvetica').fontSize(8);
     scholastic.forEach((s, i) => {
-      const rowH = 22;
-      if (i % 2 === 1) doc.rect(40, y, 515, rowH).fill('#f8fafc');
+      const rowH = 17;
+      if (i % 2 === 1) doc.rect(LEFT, y, PAGE_W, rowH).fill('#f8fafc');
       const isFail = s.status !== 'absent' && Number(s.marks_obtained) < Number(s.passing_marks);
-      doc.fillColor('#222').text(s.subject_name, 45, y + 6, { width: 220 });
-      doc.font('Helvetica-Bold').text(s.status === 'absent' ? 'AB' : (s.marks_obtained ?? '-'), 265, y + 6, { width: 110 });
-      doc.font('Helvetica').text(String(s.max_marks), 375, y + 6, { width: 90 });
+      doc.fillColor('#1e293b').text(s.subject_name, LEFT + 8, y + 4, { width: 230 });
+      doc.font('Helvetica-Bold').text(s.status === 'absent' ? 'AB' : (s.marks_obtained ?? '-'), LEFT + 238, y + 4, { width: 110 });
+      doc.font('Helvetica').text(String(s.max_marks), LEFT + 348, y + 4, { width: 90 });
       doc.fillColor(s.status === 'absent' || isFail ? '#dc2626' : '#16a34a').font('Helvetica-Bold')
-        .text(s.status === 'absent' ? 'Absent' : isFail ? 'Fail' : 'Pass', 465, y + 6, { width: 90 });
-      doc.fillColor('#222').font('Helvetica');
+        .text(s.status === 'absent' ? 'Absent' : isFail ? 'Fail' : 'Pass', LEFT + 438, y + 4, { width: 90 });
+      doc.fillColor('#1e293b').font('Helvetica');
       y += rowH;
     });
-    y += 12;
+    y += 10;
   }
 
   if (coScholastic.length) {
-    doc.fontSize(10).fillColor('#111').font('Helvetica-Bold').text('CO-SCHOLASTIC / GRADED AREAS', 40, y);
-    y += 16;
-    y = drawTableHeader(['Area', 'Grade Obtained'], [350, 160], y);
-    doc.font('Helvetica').fontSize(9);
+    doc.fontSize(8.5).fillColor('#0f172a').font('Helvetica-Bold').text('CO-SCHOLASTIC / GRADED AREAS', LEFT, y);
+    y += 12;
+    y = drawTableHeader(['Area', 'Grade'], [370, 150], y);
+    doc.font('Helvetica').fontSize(8);
     coScholastic.forEach((s, i) => {
-      const rowH = 22;
-      if (i % 2 === 1) doc.rect(40, y, 515, rowH).fill('#f8fafc');
-      doc.fillColor('#222').text(s.subject_name, 45, y + 6, { width: 350 });
+      const rowH = 17;
+      if (i % 2 === 1) doc.rect(LEFT, y, PAGE_W, rowH).fill('#f8fafc');
+      doc.fillColor('#1e293b').text(s.subject_name, LEFT + 8, y + 4, { width: 370 });
       doc.font('Helvetica-Bold').fillColor(gradeColor(s.grade_obtained))
-        .text(s.status === 'absent' ? 'AB' : (s.grade_obtained || '-'), 395, y + 6, { width: 160 });
-      doc.fillColor('#222').font('Helvetica');
+        .text(s.status === 'absent' ? 'AB' : (s.grade_obtained || '-'), LEFT + 378, y + 4, { width: 150 });
+      doc.fillColor('#1e293b').font('Helvetica');
       y += rowH;
     });
-    y += 12;
+    y += 10;
   }
 
-  doc.rect(40, y, 515, 55).lineWidth(2).stroke('#000');
-  const colW = 515 / 3;
+  // ── RESULT SUMMARY (compact 3-box card) ──
+  doc.roundedRect(LEFT, y, PAGE_W, 46, 6).fillAndStroke('#0f172a', '#0f172a');
+  const colW = PAGE_W / 3;
   const summary = [
-    ['OVERALL GRADE', overall.grade || '-', gradeColor(overall.grade)],
-    ['PERCENTAGE', `${overall.percentage}%`, '#111'],
-    ['RESULT', (overall.status || '-').toUpperCase(), overall.status === 'pass' ? '#16a34a' : '#dc2626'],
+    ['GRADE', overall.grade || '-', gradeColor(overall.grade)],
+    ['PERCENTAGE', `${overall.percentage}%`, '#38bdf8'],
+    ['RESULT', (overall.status || '-').toUpperCase(), overall.status === 'pass' ? '#4ade80' : '#f87171'],
   ];
   summary.forEach((s, i) => {
-    doc.fontSize(8).fillColor('#666').font('Helvetica-Bold').text(s[0], 40 + i * colW, y + 10, { width: colW, align: 'center' });
-    doc.fontSize(18).fillColor(s[2]).text(s[1], 40 + i * colW, y + 24, { width: colW, align: 'center' });
+    doc.fontSize(6.5).fillColor('#94a3b8').font('Helvetica-Bold').text(s[0], LEFT + i * colW, y + 8, { width: colW, align: 'center' });
+    doc.fontSize(15).fillColor(s[2]).text(s[1], LEFT + i * colW, y + 20, { width: colW, align: 'center' });
   });
-  y += 70;
+  y += 56;
 
-  if (gradingScale.length && y < 740) {
+  // ── GRADING SCALE LEGEND ──
+  if (gradingScale.length && y < 745) {
     const legend = gradingScale.map((g) => `${g.grade_label}: ${g.min_percent}-${g.max_percent}%`).join('   |   ');
-    doc.fontSize(6.5).fillColor('#888').font('Helvetica').text(`Grading Scale:  ${legend}`, 40, y, { width: 515, align: 'center' });
+    doc.fontSize(6).fillColor('#94a3b8').font('Helvetica').text(`Grading Scale:  ${legend}`, LEFT, y, { width: PAGE_W, align: 'center' });
+    y += 16;
   }
 
-  const sigY = 780;
+  // ── SIGNATURES (fixed near bottom of page) ──
+  const sigY = 790;
   const sigLabels = ['Class Teacher', 'Examination In-Charge', 'Principal'];
-  const sigW = 515 / 3;
+  const sigW = PAGE_W / 3;
   sigLabels.forEach((label, i) => {
-    const x = 40 + i * sigW + 20;
-    doc.moveTo(x, sigY).lineTo(x + sigW - 40, sigY).strokeColor('#000').lineWidth(1).stroke();
-    doc.fontSize(9).fillColor('#333').font('Helvetica-Bold').text(label, x, sigY + 4, { width: sigW - 40, align: 'center' });
+    const x = LEFT + i * sigW + 25;
+    doc.moveTo(x, sigY).lineTo(x + sigW - 50, sigY).strokeColor('#334155').lineWidth(0.75).stroke();
+    doc.fontSize(7.5).fillColor('#475569').font('Helvetica-Bold')
+      .text(label, x, sigY + 3, { width: sigW - 50, align: 'center' });
   });
 }
 
