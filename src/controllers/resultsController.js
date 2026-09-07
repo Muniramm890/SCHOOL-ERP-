@@ -2,7 +2,7 @@
 const sql = require('mssql');
 const { query, queryOne, withTransaction } = require('../config/db');
 const { success, created, notFound, badRequest } = require('../utils/response');
-const { generateStudentReportCardPdf } = require('../services/resultCardService');
+const { generateStudentReportCardPdf, generateBulkReportCardsPdf } = require('../services/resultCardService');
 
 // ═══════════════════════════════════════════════════════════════
 // GET /api/results/exam-groups
@@ -534,5 +534,18 @@ exports.downloadReportCardPdf = async (req, res, next) => {
 
     const url = await generateStudentReportCardPdf(schoolId, studentId, exam_group_id);
     return success(res, { url }, 'Report card PDF generated');
+  } catch (err) { next(err); }
+};
+
+
+
+exports.downloadBulkReportCards = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { section_id, exam_group_id } = req.query;
+    if (!section_id || !exam_group_id) return badRequest(res, 'section_id and exam_group_id are required');
+
+    const result = await generateBulkReportCardsPdf(schoolId, section_id, exam_group_id);
+    return success(res, result, `${result.count} report cards generated`);
   } catch (err) { next(err); }
 };
