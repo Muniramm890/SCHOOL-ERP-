@@ -10,6 +10,8 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// This code written by muniram meena 
+
 async function fetchImageBuffer(url) {
   try {
     if (!url) return null;
