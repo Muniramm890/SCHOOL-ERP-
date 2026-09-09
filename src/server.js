@@ -27,7 +27,7 @@ app.use(compression());
 
 // ── CORS ──────────────────────────────────────────────────────────────
 // ── CORS ──────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000,https://dpw5tz.csb.app').split(',');
+const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000,https://dpw5tz.csb.app,https://k5wrj7.csb.app').split(',');
 
 app.use(cors({
   origin: (origin, cb) => {
