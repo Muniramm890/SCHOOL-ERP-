@@ -18,7 +18,7 @@ exports.login = async (req, res, next) => {
               st.first_name, st.last_name
        FROM student_credentials sc
        JOIN students st ON st.id = sc.student_id AND st.deleted_at IS NULL
-       WHERE (sc.login_phone = @idf OR sc.login_email = @idf) AND sc.deleted_at IS NULL`,
+              WHERE (sc.login_phone = @idf OR sc.login_email = @idf OR sc.login_identifier = @idf) AND sc.deleted_at IS NULL`,
       { idf: { type: sql.NVarChar(255), value: identifier.trim() } }
     );
 
