@@ -1,9 +1,9 @@
 //routes/student/Results.js
 const router = require('express').Router();
-const { query, sql } = require('../config/db');
-const { success } = require('../utils/response');
-const resultsController = require('../controllers/resultsController'); // ⚠️ apna actual filename confirm kar dena
-const { authenticateStudent } = require('../middleware/studentAuth');
+const { query, sql } = require('../../config/db');
+const { success } = require('../../utils/response');
+const resultsController = require('../../controllers/resultsController'); // ⚠️ apna actual filename confirm kar dena
+const { authenticateStudent } = require('../../middleware/studentAuth');
 
 router.use(authenticateStudent);
 
