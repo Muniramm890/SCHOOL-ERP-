@@ -98,6 +98,14 @@ app.use('/api/attendance',authenticate,   require('./routes/attendance'));
 app.use(`${API}/audit`, require('./routes/audit'));
 app.use(`${API}/admin/users`, require('./routes/userManagement'));
 
+// ── Student App routes (isolated auth, existing controllers reused) ──────
+app.use(`${API}/student/auth`,        require('./routes/student/Auth'));
+app.use(`${API}/student/attendance`,  require('./routes/student/Attendance'));
+app.use(`${API}/student/fees`,        require('./routes/student/Fees'));
+app.use(`${API}/student/payments`,    require('./routes/student/Payments'));
+app.use(`${API}/student/results`,     require('./routes/student/Results'));
+app.use(`${API}/student/dashboard`,   require('./routes/student/Dashboard'));
+
 // ── 404 ────────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `Route ${req.method} ${req.path} not found` });
