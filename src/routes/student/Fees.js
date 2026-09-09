@@ -1,7 +1,7 @@
 //routes/student/Fees.js
 const router = require('express').Router();
-const feesController = require('../controllers/feesController');
-const { authenticateStudent } = require('../middleware/studentAuth');
+const feesController = require('../../controllers/feesController');
+const { authenticateStudent } = require('../../middleware/studentAuth');
 
 router.use(authenticateStudent);
 
