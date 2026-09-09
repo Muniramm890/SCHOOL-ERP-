@@ -22,6 +22,8 @@ exports.login = async (req, res, next) => {
       { idf: { type: sql.NVarChar(255), value: identifier.trim() } }
     );
 
+    
+
     if (!cred) return unauthorized(res, 'Invalid credentials');
     if (!cred.is_active) return unauthorized(res, 'Your account has been blocked. Contact school office.');
 
