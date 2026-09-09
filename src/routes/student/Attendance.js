@@ -1,7 +1,7 @@
 //routes/student/Attendance.js
 const router = require('express').Router();
-const attendanceController = require('../controllers/attendanceController');
-const { authenticateStudent } = require('../middleware/studentAuth');
+const attendanceController = require('../../controllers/attendanceController');
+const { authenticateStudent } = require('../../middleware/studentAuth');
 
 router.use(authenticateStudent);
 
