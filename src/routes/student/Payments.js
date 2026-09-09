@@ -1,7 +1,7 @@
 //routes/student/Payments.js
 const router = require('express').Router();
-const paymentsController = require('../controllers/paymentsController');
-const { authenticateStudent } = require('../middleware/studentAuth');
+const paymentsController = require('../../controllers/paymentsController');
+const { authenticateStudent } = require('../../middleware/studentAuth');
 
 router.use(authenticateStudent);
 
