@@ -14,4 +14,9 @@ router.put('/:memberId/role', ctrl.updateRole);
 router.put('/:memberId/permissions', ctrl.updatePermissions);
 router.post('/:memberId/reset-password', ctrl.resetPassword);
 
+router.get('/students', ctrl.listStudentsForAuth);
+router.post('/students/:studentId/authorize', ctrl.authorizeStudent);
+router.put('/students/:studentId/status', ctrl.updateStudentLoginStatus);
+router.post('/students/:studentId/reset-password', ctrl.resetStudentPassword);
+
 module.exports = router;
