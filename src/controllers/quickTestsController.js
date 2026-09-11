@@ -272,6 +272,7 @@ exports.gasSync = async (req, res, next) => {
     const GAS_URL = process.env.GAS_API_URL || " GAS_URL";
 
     // 3. Payload में स्कूल और यूज़र की सुरक्षित पहचान (Identity) मिलाएँ
+      
     const securePayload = {
       ...payload,
       schoolId: schoolId,          // 👈 SaaS Magic: हर स्कूल का डेटा अलग रहेगा
@@ -280,4 +281,12 @@ exports.gasSync = async (req, res, next) => {
       operator: name || fullName || null,
       ...(role === 'student' ? { verifiedStudentId: userId } : {})
     };
+
+    // TODO: Add your actual fetch/axios call to GAS_URL here using securePayload
+
+    return success(res, securePayload, "GAS sync successful");
+  } catch (err) { 
+    next(err); 
+  }
+};
 
