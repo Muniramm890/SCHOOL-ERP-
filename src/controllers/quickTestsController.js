@@ -259,11 +259,12 @@ exports.remove = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// ── POST /api/quick-tests/gas-sync ─────────────────────────────────────────
+
 // ── POST /api/quick-tests/gas-sync ─────────────────────────────────────────
 exports.gasSync = async (req, res, next) => {
   try {
-    const { schoolId, role, email, name } = req.user; 
+    // 🟢 1. आपके मिडलवेयर (auth.js & studentAuth.js) के EXACT वेरिएबल्स
+    const { schoolId, role, fullName, email } = req.user; 
     const { action, payload = {} } = req.body;
 
     if (!action) return res.status(400).json({ status: false, message: "Action is required for GAS sync." });
@@ -273,17 +274,25 @@ exports.gasSync = async (req, res, next) => {
       throw new Error("GAS_API_URL is missing in environment variables.");
     }
 
-    // 1. GAS के लिए फ्लैट JSON पेलोड तैयार करें
+    // 🟢 2. Role को GAS के हिसाब से Normalize करना (Uppercase)
+    let normalizedRole = "STUDENT";
+    if (role === "school_admin" || role === "admin") {
+        normalizedRole = "ADMIN";
+    } else if (role === "teacher") {
+        normalizedRole = "TEACHER";
+    }
+
+    // 🟢 3. GAS के लिए परफेक्ट पेलोड तैयार करना
     const gasPayload = {
       action: action,
       ...payload,
       schoolId: schoolId,          
-      verifiedRole: role,
-      verifiedEmail: email,
-      operator: name
+      verifiedRole: normalizedRole, // अब यह 'STUDENT' या 'ADMIN' जाएगा
+      verifiedEmail: email || "no-email-provided", // स्टूडेंट में ईमेल नहीं है, तो क्रैश से बचने के लिए fallback
+      operator: fullName // मिडलवेयर में 'fullName' है, जिसे GAS 'operator' की तरह यूज़ करेगा
     };
 
-    // 2. Google Apps Script को असली Fetch Request भेजें
+    // 4. Google Apps Script को असली Fetch Request भेजें
     const response = await fetch(GAS_URL, {
       method: "POST",
       headers: {
@@ -292,15 +301,15 @@ exports.gasSync = async (req, res, next) => {
       body: JSON.stringify(gasPayload)
     });
 
-    // 3. GAS से आया असली डेटा पढ़ें
+    // 5. GAS से आया असली डेटा पढ़ें
     const gasData = await response.json();
 
-    // 4. अगर GAS से error/false आया है
+    // 6. अगर GAS से error/false आया है
     if (gasData.status === false || gasData.success === false) {
        return res.status(400).json(gasData); 
     }
 
-    // 5. सक्सेस होने पर डेटा सीधे फ्रंटएंड को भेज दें
+    // 7. सक्सेस होने पर डेटा सीधे फ्रंटएंड को भेज दें
     return res.status(200).json(gasData);
 
   } catch (err) { 
@@ -308,3 +317,4 @@ exports.gasSync = async (req, res, next) => {
     next(err); 
   }
 };
+
