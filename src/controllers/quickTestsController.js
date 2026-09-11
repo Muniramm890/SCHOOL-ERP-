@@ -260,31 +260,51 @@ exports.remove = async (req, res, next) => {
 };
 
 // ── POST /api/quick-tests/gas-sync ─────────────────────────────────────────
+// ── POST /api/quick-tests/gas-sync ─────────────────────────────────────────
 exports.gasSync = async (req, res, next) => {
   try {
-    // 1. JWT से सुरक्षित डेटा निकालें (Frontend इसे नहीं बदल सकता)
     const { schoolId, role, email, name } = req.user; 
     const { action, payload = {} } = req.body;
 
-    if (!action) return badRequest(res, "Action is required for GAS sync.");
+    if (!action) return res.status(400).json({ status: false, message: "Action is required for GAS sync." });
 
-    // 2. .env फ़ाइल में अपना GAS URL डालें (अभी के लिए यहाँ हार्डकोड कर सकते हैं)
-    const GAS_URL = process.env.GAS_API_URL || " GAS_URL";
+    const GAS_URL = process.env.GAS_API_URL;
+    if (!GAS_URL) {
+      throw new Error("GAS_API_URL is missing in environment variables.");
+    }
 
-    // 3. Payload में स्कूल और यूज़र की सुरक्षित पहचान (Identity) मिलाएँ
-    const securePayload = {
+    // 1. GAS के लिए फ्लैट JSON पेलोड तैयार करें
+    const gasPayload = {
+      action: action,
       ...payload,
-      schoolId: schoolId,          // 👈 SaaS Magic: हर स्कूल का डेटा अलग रहेगा
+      schoolId: schoolId,          
       verifiedRole: role,
       verifiedEmail: email,
       operator: name
     };
 
-    // TODO: Add your actual fetch/axios call to GAS_URL here using securePayload
+    // 2. Google Apps Script को असली Fetch Request भेजें
+    const response = await fetch(GAS_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(gasPayload)
+    });
 
-    return success(res, securePayload, "GAS sync successful");
+    // 3. GAS से आया असली डेटा पढ़ें
+    const gasData = await response.json();
+
+    // 4. अगर GAS से error/false आया है
+    if (gasData.status === false || gasData.success === false) {
+       return res.status(400).json(gasData); 
+    }
+
+    // 5. सक्सेस होने पर डेटा सीधे फ्रंटएंड को भेज दें
+    return res.status(200).json(gasData);
+
   } catch (err) { 
+    console.error("GAS Bridge Error:", err.message);
     next(err); 
   }
 };
-
