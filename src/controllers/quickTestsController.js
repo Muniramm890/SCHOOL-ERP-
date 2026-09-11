@@ -263,7 +263,7 @@ exports.remove = async (req, res, next) => {
 exports.gasSync = async (req, res, next) => {
   try {
     // 1. JWT से सुरक्षित डेटा निकालें (Frontend इसे नहीं बदल सकता)
-    const { schoolId, role, email, name, userId, fullName } = req.user; 
+    const { schoolId, role, email, name } = req.user; 
     const { action, payload = {} } = req.body;
 
     if (!action) return badRequest(res, "Action is required for GAS sync.");
@@ -272,14 +272,12 @@ exports.gasSync = async (req, res, next) => {
     const GAS_URL = process.env.GAS_API_URL || " GAS_URL";
 
     // 3. Payload में स्कूल और यूज़र की सुरक्षित पहचान (Identity) मिलाएँ
-      
     const securePayload = {
       ...payload,
       schoolId: schoolId,          // 👈 SaaS Magic: हर स्कूल का डेटा अलग रहेगा
       verifiedRole: role,
-      verifiedEmail: email || null,
-      operator: name || fullName || null,
-      ...(role === 'student' ? { verifiedStudentId: userId } : {})
+      verifiedEmail: email,
+      operator: name
     };
 
     // TODO: Add your actual fetch/axios call to GAS_URL here using securePayload
