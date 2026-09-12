@@ -1,7 +1,7 @@
 // src/controllers/homeworkController.js  
 const { query, queryOne, withTransaction, sql } = require('../config/db');
 const { success, created, notFound, badRequest } = require('../utils/response');
-const { uploadBufferToAzure, deleteBlobFromAzure } = require('../services/uploadService');
+const { uploadBufferToAzure, deleteBlobFromAzure, getSignedDownloadUrl } = require('../services/uploadService');
 const { v4: uuidv4 } = require('uuid');
 
 // ── POST /api/homework ─────────────────────────────────────────────────
@@ -168,5 +168,41 @@ exports.remove = async (req, res, next) => {
     );
 
     return success(res, null, 'Homework deleted permanently');
+  } catch (err) { next(err); }
+};
+
+// ── GET /api/homework/mine  (STUDENT — same controller, same file) ────────
+exports.listForStudent = async (req, res, next) => {
+  try {
+    const { schoolId, sectionId } = req.student; // set by authenticateStudent
+
+    const rows = await query(
+      `SELECT DISTINCT h.id, h.title, h.description, h.given_date, h.due_date, h.created_at
+       FROM homework h
+       JOIN homework_targets ht ON ht.homework_id = h.id
+       WHERE h.school_id = @sid AND ht.section_id = @secId
+         AND h.is_visible = 1 AND h.deleted_at IS NULL
+       ORDER BY h.given_date DESC`,
+      {
+        sid:   { type: sql.UniqueIdentifier, value: schoolId },
+        secId: { type: sql.UniqueIdentifier, value: sectionId },
+      }
+    );
+
+    const list = rows.recordset;
+    for (const hw of list) {
+      const a = await query(
+        `SELECT id, file_name, blob_path, file_type FROM homework_attachments WHERE homework_id = @id`,
+        { id: { type: sql.UniqueIdentifier, value: hw.id } }
+      );
+      hw.attachments = a.recordset.map(f => ({
+        id: f.id,
+        file_name: f.file_name,
+        file_type: f.file_type,
+        download_url: getSignedDownloadUrl(f.blob_path),
+      }));
+    }
+
+    return success(res, list);
   } catch (err) { next(err); }
 };
