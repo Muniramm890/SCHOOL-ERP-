@@ -68,4 +68,38 @@ const uploadBufferToAzure = async (buffer, originalname, ext) => {
 
 
 
-module.exports = { uploadImageBuffer, uploadBufferToAzure, uploadRawBuffer, safeName };
+const { generateBlobSASQueryParameters, BlobSASPermissions, StorageSharedKeyCredential } = require('@azure/storage-blob');
+
+// Delete a blob when homework/attachment is removed
+const deleteBlobFromAzure = async (blobPath) => {
+  try {
+    const blockBlobClient = containerClient.getBlockBlobClient(blobPath);
+    await blockBlobClient.deleteIfExists();
+  } catch (error) {
+    console.error('Azure Delete Failed:', error.message);
+  }
+};
+
+// Generate a short-lived signed URL (use this if the container is PRIVATE, not public-read)
+const getSignedDownloadUrl = (blobPath, expiryMinutes = 60) => {
+  try {
+    const accountName = blobServiceClient.accountName;
+    const accountKey = process.env.AZURE_STORAGE_KEY; // set this in .env
+    if (!accountKey) return containerClient.getBlockBlobClient(blobPath).url; // fallback: public url
+
+    const sharedKeyCredential = new StorageSharedKeyCredential(accountName, accountKey);
+    const sasToken = generateBlobSASQueryParameters({
+      containerName,
+      blobName: blobPath,
+      permissions: BlobSASPermissions.parse('r'),
+      expiresOn: new Date(Date.now() + expiryMinutes * 60 * 1000),
+    }, sharedKeyCredential).toString();
+
+    return `${containerClient.getBlockBlobClient(blobPath).url}?${sasToken}`;
+  } catch (error) {
+    console.error('SAS Generation Failed:', error.message);
+    return containerClient.getBlockBlobClient(blobPath).url;
+  }
+};
+
+module.exports = { uploadImageBuffer, uploadBufferToAzure, uploadRawBuffer, safeName, deleteBlobFromAzure, getSignedDownloadUrl };
