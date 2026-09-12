@@ -206,3 +206,104 @@ exports.listForStudent = async (req, res, next) => {
     return success(res, list);
   } catch (err) { next(err); }
 };
+
+// ── PUT /api/homework/:id  (EDIT — meta + optionally replace targets + append files) ──
+exports.update = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { schoolId } = req.user;
+    const { title, description, given_date, due_date } = req.body;
+    let targets = req.body.targets;
+    if (typeof targets === 'string') targets = JSON.parse(targets);
+
+    const hw = await queryOne(
+      `SELECT id FROM homework WHERE id = @id AND school_id = @sid AND deleted_at IS NULL`,
+      { id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+    if (!hw) return notFound(res, 'Homework not found');
+
+    await query(
+      `UPDATE homework SET
+         title = ISNULL(@title, title),
+         description = ISNULL(@desc, description),
+         given_date = ISNULL(@given, given_date),
+         due_date = ISNULL(@due, due_date),
+         updated_at = @now
+       WHERE id = @id AND school_id = @sid`,
+      {
+        id:    { type: sql.UniqueIdentifier, value: id },
+        sid:   { type: sql.UniqueIdentifier, value: schoolId },
+        title: { type: sql.NVarChar(255), value: title || null },
+        desc:  { type: sql.NVarChar(sql.MAX), value: description ?? null },
+        given: { type: sql.Date, value: given_date || null },
+        due:   { type: sql.Date, value: due_date || null },
+        now:   { type: sql.DateTime2, value: new Date() },
+      }
+    );
+
+    // If targets sent, replace them fully (delete old, insert new)
+    if (Array.isArray(targets) && targets.length > 0) {
+      await query(`DELETE FROM homework_targets WHERE homework_id = @id AND school_id = @sid`,
+        { id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } });
+
+      for (const t of targets) {
+        await query(
+          `INSERT INTO homework_targets (id, homework_id, school_id, section_id, subject_id, created_at)
+           VALUES (@tid, @hwId, @sid, @secId, @subId, @now)`,
+          {
+            tid:   { type: sql.UniqueIdentifier, value: uuidv4() },
+            hwId:  { type: sql.UniqueIdentifier, value: id },
+            sid:   { type: sql.UniqueIdentifier, value: schoolId },
+            secId: { type: sql.UniqueIdentifier, value: t.section_id },
+            subId: { type: sql.UniqueIdentifier, value: t.subject_id || null },
+            now:   { type: sql.DateTime2, value: new Date() },
+          }
+        );
+      }
+    }
+
+    // Append any new files
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        const ext = '.' + file.originalname.split('.').pop().toLowerCase();
+        const uploadResult = await uploadBufferToAzure(file.buffer, file.originalname, ext);
+        await query(
+          `INSERT INTO homework_attachments (id, homework_id, school_id, file_name, file_url, blob_path, file_type, file_size_bytes, uploaded_at)
+           VALUES (@aid, @hwId, @sid, @fname, @url, @path, @ftype, @fsize, @now)`,
+          {
+            aid:   { type: sql.UniqueIdentifier, value: uuidv4() },
+            hwId:  { type: sql.UniqueIdentifier, value: id },
+            sid:   { type: sql.UniqueIdentifier, value: schoolId },
+            fname: { type: sql.NVarChar(255), value: file.originalname },
+            url:   { type: sql.NVarChar(1000), value: uploadResult.secure_url },
+            path:  { type: sql.NVarChar(500), value: uploadResult.public_id },
+            ftype: { type: sql.NVarChar(50), value: ext },
+            fsize: { type: sql.BigInt, value: file.size },
+            now:   { type: sql.DateTime2, value: new Date() },
+          }
+        );
+      }
+    }
+
+    return success(res, null, 'Homework updated successfully');
+  } catch (err) { next(err); }
+};
+
+// ── DELETE /api/homework/:id/attachments/:attachmentId  (remove single file) ──
+exports.removeAttachment = async (req, res, next) => {
+  try {
+    const { id, attachmentId } = req.params;
+    const { schoolId } = req.user;
+
+    const att = await queryOne(
+      `SELECT blob_path FROM homework_attachments WHERE id = @aid AND homework_id = @hwId AND school_id = @sid`,
+      { aid: { type: sql.UniqueIdentifier, value: attachmentId }, hwId: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
+    );
+    if (!att) return notFound(res, 'Attachment not found');
+
+    await deleteBlobFromAzure(att.blob_path);
+    await query(`DELETE FROM homework_attachments WHERE id = @aid`, { aid: { type: sql.UniqueIdentifier, value: attachmentId } });
+
+    return success(res, null, 'Attachment removed');
+  } catch (err) { next(err); }
+};
