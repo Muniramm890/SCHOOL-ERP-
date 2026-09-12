@@ -41,7 +41,7 @@ function uploadRawBuffer(buffer, { schoolName, subfolder, fileName, ext }) {
 
 
 
-const connectionString = process.env.homeworkContainer;
+const connectionString = process.env.uploadhomework_string;
 const containerName = 'homeworksschooloffice'; // आपका कंटेनर नाम
 
 const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
