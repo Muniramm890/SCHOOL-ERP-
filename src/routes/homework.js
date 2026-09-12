@@ -1,14 +1,12 @@
 // src/routes/homework.js
 const router = require('express').Router();
 const ctrl   = require('../controllers/homeworkController');
-const { authenticate } = require('../middleware/auth');
+const upload = require('../middleware/upload');
+const { authorize } = require('../middleware/auth');
 
-router.use(authenticate);
-
-router.get('/',                                  ctrl.list);
-router.post('/',                                 ctrl.create);
-router.delete('/:id',                            ctrl.remove);
-router.get('/:id/submissions',                   ctrl.listSubmissions);
-router.put('/:id/submissions/:studentId',        ctrl.gradeSubmission);
+router.get('/',  ctrl.list);
+router.post('/', authorize('admin','principal','teacher'), upload.array('files', 10), ctrl.create);
+router.patch('/:id/visibility', authorize('admin','principal','teacher'), ctrl.toggleVisibility);
+router.delete('/:id', authorize('admin','principal','teacher'), ctrl.remove);
 
 module.exports = router;
