@@ -1,5 +1,6 @@
 //src/services/uploadService.js
 const cloudinary = require('cloudinary').v2;
+const { BlobServiceClient } = require('@azure/storage-blob');
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -38,4 +39,33 @@ function uploadRawBuffer(buffer, { schoolName, subfolder, fileName, ext }) {
   });
 }
 
-module.exports = { uploadImageBuffer, uploadRawBuffer, safeName };
+
+
+const connectionString = process.env.homeworkContainer;
+const containerName = 'homeworksschooloffice'; // आपका कंटेनर नाम
+
+const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
+const containerClient = blobServiceClient.getContainerClient(containerName);
+
+
+
+const uploadBufferToAzure = async (buffer, originalname, ext) => {
+  try {
+    const folderPath = `homework/${Date.now()}_${safeName(originalname)}${ext}`;
+    const blockBlobClient = containerClient.getBlockBlobClient(folderPath);
+
+    await blockBlobClient.upload(buffer, buffer.length);
+
+    return {
+      secure_url: blockBlobClient.url,
+      public_id: folderPath
+    };
+  } catch (error) {
+    throw new Error(`Azure Upload Failed: ${error.message}`);
+  }
+};
+
+
+
+
+module.exports = { uploadImageBuffer, uploadBufferToAzure, uploadRawBuffer, safeName };
