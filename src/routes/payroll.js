@@ -19,6 +19,8 @@ router.post('/runs/:runId/finalize', ctrl.finalizeRun);
 
 router.get('/payslips', ctrl.listPayslips);
 router.get('/payslips/:id', ctrl.getPayslip);
+router.patch('/payslips/:id/adjust', ctrl.adjustPayslip);
+router.post('/payslips/:id/generate-pdf', ctrl.generatePdf);
 router.patch('/payslips/:id/mark-paid', ctrl.markPaid);
 
 module.exports = router;

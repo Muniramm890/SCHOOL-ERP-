@@ -2,6 +2,8 @@
 const { query, queryOne, sql } = require('../config/db');
 const { success, created, notFound, badRequest } = require('../utils/response');
 const { v4: uuidv4 } = require('uuid');
+const { uploadPayslipPdf, getSignedDownloadUrl } = require('../services/uploadService');
+const { generatePayslipPdfBuffer } = require('../services/payslipPdfService');
 
 // ── Ownership guard: staff_id must be an active member of this school ──
 async function assertStaffBelongsToSchool(schoolId, staffId) {
@@ -300,5 +302,73 @@ exports.getPayslip = async (req, res, next) => {
     const bank = await queryOne(`SELECT * FROM staff_bank_details WHERE staff_id=@sid AND school_id=@schoolId`,
       { sid: { type: sql.UniqueIdentifier, value: slip.staff_id }, schoolId: { type: sql.UniqueIdentifier, value: schoolId } });
     return success(res, { ...slip, bank_details: bank || null });
+  } catch (err) { next(err); }
+};
+
+// ── POST /api/payroll/payslips/:id/generate-pdf ──
+exports.generatePdf = async (req, res, next) => {
+  try {
+    const { id } = req.params; const { schoolId } = req.user;
+    const slip = await queryOne(
+      `SELECT p.*, u.full_name AS staff_name, sp.designation, sp.department
+       FROM payslips p JOIN users u ON u.id = p.staff_id
+       LEFT JOIN staff_profiles sp ON sp.user_id = p.staff_id AND sp.school_id = p.school_id
+       WHERE p.id=@id AND p.school_id=@sid`,
+      { id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } });
+    if (!slip) return notFound(res, 'Payslip not found');
+
+    const bank = await queryOne(`SELECT * FROM staff_bank_details WHERE staff_id=@sid AND school_id=@schoolId`,
+      { sid: { type: sql.UniqueIdentifier, value: slip.staff_id }, schoolId: { type: sql.UniqueIdentifier, value: schoolId } });
+
+    const school = await queryOne(`SELECT name, address_line1, city, state FROM schools WHERE id=@sid`,
+      { sid: { type: sql.UniqueIdentifier, value: schoolId } });
+
+    const pdfBuffer = await generatePayslipPdfBuffer({ ...slip, bank_details: bank || null }, school);
+    const uploadResult = await uploadPayslipPdf(pdfBuffer, { schoolId, monthYear: slip.month_year, staffId: slip.staff_id });
+
+    await query(`UPDATE payslips SET pdf_url=@url, pdf_blob_path=@path, pdf_generated_at=@now WHERE id=@id AND school_id=@sid`,
+      { id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId },
+        url: { type: sql.NVarChar(1000), value: uploadResult.secure_url }, path: { type: sql.NVarChar(500), value: uploadResult.public_id },
+        now: { type: sql.DateTime2, value: new Date() } });
+
+    return success(res, { pdf_url: getSignedDownloadUrl(uploadResult.public_id, 60, 'payslips') }, 'Payslip PDF generated');
+  } catch (err) { next(err); }
+};
+
+// ── PATCH /api/payroll/payslips/:id/adjust ──
+exports.adjustPayslip = async (req, res, next) => {
+  try {
+    const { id } = req.params; const { schoolId } = req.user;
+    const { manual_lop_days, bonus_amount = 0, adjustment_note } = req.body;
+
+    const slip = await queryOne(
+      `SELECT p.*, r.status AS run_status FROM payslips p
+       JOIN payroll_runs r ON r.id = p.payroll_run_id
+       WHERE p.id=@id AND p.school_id=@sid AND p.deleted_at IS NULL`,
+      { id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } });
+    if (!slip) return notFound(res, 'Payslip not found');
+    if (slip.run_status === 'FINALIZED') return badRequest(res, 'This payroll run is finalized and locked.');
+
+    const isAdjusted = manual_lop_days != null && Number(manual_lop_days) !== Number(slip.auto_lop_days ?? slip.lop_days) || Number(bonus_amount) > 0;
+    if (isAdjusted && !adjustment_note?.trim()) return badRequest(res, 'Adjustment reason is required.');
+
+    const effectiveLop = manual_lop_days != null ? Number(manual_lop_days) : Number(slip.lop_days);
+    const perDayRate = slip.gross_salary / slip.total_days;
+    const lopDeduction = +(perDayRate * effectiveLop).toFixed(2);
+    const totalDeduction = +(lopDeduction + slip.pf_deduction + slip.pt_deduction + slip.other_deduction).toFixed(2);
+    const netPay = +(slip.gross_salary - totalDeduction + Number(bonus_amount)).toFixed(2);
+
+    await query(
+      `UPDATE payslips SET lop_days=@lop, lop_deduction=@lopDed, total_deduction=@totalDed, net_pay=@net,
+         bonus_amount=@bonus, is_manually_adjusted=@isAdj, adjustment_note=@note,
+         pdf_url=NULL, pdf_blob_path=NULL -- stale PDF invalidated, regenerate on next view
+       WHERE id=@id AND school_id=@sid`,
+      { id: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId },
+        lop: { type: sql.Decimal(5,1), value: effectiveLop }, lopDed: { type: sql.Decimal(10,2), value: lopDeduction },
+        totalDed: { type: sql.Decimal(10,2), value: totalDeduction }, net: { type: sql.Decimal(10,2), value: netPay },
+        bonus: { type: sql.Decimal(10,2), value: Number(bonus_amount) }, isAdj: { type: sql.Bit, value: isAdjusted ? 1 : 0 },
+        note: { type: sql.NVarChar(500), value: adjustment_note || null } });
+
+    return success(res, null, 'Payslip adjusted successfully');
   } catch (err) { next(err); }
 };

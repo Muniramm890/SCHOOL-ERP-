@@ -39,67 +39,81 @@ function uploadRawBuffer(buffer, { schoolName, subfolder, fileName, ext }) {
   });
 }
 
-
+const { generateBlobSASQueryParameters, BlobSASPermissions, StorageSharedKeyCredential } = require('@azure/storage-blob');
 
 const connectionString = process.env.uploadhomework_string;
-const containerName = 'homeworksschooloffice'; // आपका कंटेनर नाम
-
 const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
-const containerClient = blobServiceClient.getContainerClient(containerName);
 
+// ── Container registry — one BlobServiceClient, multiple logical containers ──
+const CONTAINERS = {
+  homework: 'homeworksschooloffice',
+  payslips: 'payslipsschooloffice', // 🔴 create this container in Azure Portal first (Private access)
+};
+const getContainerClient = (containerKey) => blobServiceClient.getContainerClient(CONTAINERS[containerKey]);
 
+// Backward-compatible: existing homework code keeps working unchanged
+const containerClient = getContainerClient('homework');
+const containerName = CONTAINERS.homework;
 
 const uploadBufferToAzure = async (buffer, originalname, ext) => {
   try {
     const folderPath = `homework/${Date.now()}_${safeName(originalname)}${ext}`;
     const blockBlobClient = containerClient.getBlockBlobClient(folderPath);
-
     await blockBlobClient.upload(buffer, buffer.length);
-
-    return {
-      secure_url: blockBlobClient.url,
-      public_id: folderPath
-    };
+    return { secure_url: blockBlobClient.url, public_id: folderPath };
   } catch (error) {
     throw new Error(`Azure Upload Failed: ${error.message}`);
   }
 };
 
-
-
-
-const { generateBlobSASQueryParameters, BlobSASPermissions, StorageSharedKeyCredential } = require('@azure/storage-blob');
-
-// Delete a blob when homework/attachment is removed
-const deleteBlobFromAzure = async (blobPath) => {
+// 🔴 NEW: SaaS-organized payslip PDF upload — payslips/{schoolId}/{monthYear}/{staffId}_{timestamp}.pdf
+const uploadPayslipPdf = async (buffer, { schoolId, monthYear, staffId }) => {
   try {
-    const blockBlobClient = containerClient.getBlockBlobClient(blobPath);
+    const client = getContainerClient('payslips');
+    const blobPath = `payslips/${schoolId}/${monthYear}/${staffId}_${Date.now()}.pdf`;
+    const blockBlobClient = client.getBlockBlobClient(blobPath);
+    await blockBlobClient.upload(buffer, buffer.length, {
+      blobHTTPHeaders: { blobContentType: 'application/pdf', blobContentDisposition: 'inline' },
+    });
+    return { secure_url: blockBlobClient.url, public_id: blobPath };
+  } catch (error) {
+    throw new Error(`Azure Payslip Upload Failed: ${error.message}`);
+  }
+};
+
+// Delete a blob from any container when a document is removed/regenerated
+const deleteBlobFromAzure = async (blobPath, containerKey = 'homework') => {
+  try {
+    const client = getContainerClient(containerKey);
+    const blockBlobClient = client.getBlockBlobClient(blobPath);
     await blockBlobClient.deleteIfExists();
   } catch (error) {
     console.error('Azure Delete Failed:', error.message);
   }
 };
 
-// Generate a short-lived signed URL (use this if the container is PRIVATE, not public-read)
-const getSignedDownloadUrl = (blobPath, expiryMinutes = 60) => {
+// Generate a short-lived signed URL — now works across containers
+const getSignedDownloadUrl = (blobPath, expiryMinutes = 60, containerKey = 'homework') => {
   try {
+    const targetContainerName = CONTAINERS[containerKey];
+    const client = getContainerClient(containerKey);
     const accountName = blobServiceClient.accountName;
-    const accountKey = process.env.AZURE_STORAGE_KEY; // set this in .env
-    if (!accountKey) return containerClient.getBlockBlobClient(blobPath).url; // fallback: public url
+    const accountKey = process.env.AZURE_STORAGE_KEY;
+    if (!accountKey) return client.getBlockBlobClient(blobPath).url;
 
     const sharedKeyCredential = new StorageSharedKeyCredential(accountName, accountKey);
     const sasToken = generateBlobSASQueryParameters({
-      containerName,
+      containerName: targetContainerName,
       blobName: blobPath,
       permissions: BlobSASPermissions.parse('r'),
       expiresOn: new Date(Date.now() + expiryMinutes * 60 * 1000),
     }, sharedKeyCredential).toString();
 
-    return `${containerClient.getBlockBlobClient(blobPath).url}?${sasToken}`;
+    return `${client.getBlockBlobClient(blobPath).url}?${sasToken}`;
   } catch (error) {
     console.error('SAS Generation Failed:', error.message);
-    return containerClient.getBlockBlobClient(blobPath).url;
+    return getContainerClient(containerKey).getBlockBlobClient(blobPath).url;
   }
 };
 
-module.exports = { uploadImageBuffer, uploadBufferToAzure, uploadRawBuffer, safeName, deleteBlobFromAzure, getSignedDownloadUrl };
+module.exports = { uploadImageBuffer, uploadBufferToAzure, uploadRawBuffer, uploadPayslipPdf, safeName, deleteBlobFromAzure, getSignedDownloadUrl };
