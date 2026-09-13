@@ -320,7 +320,9 @@ exports.generatePdf = async (req, res, next) => {
     const bank = await queryOne(`SELECT * FROM staff_bank_details WHERE staff_id=@sid AND school_id=@schoolId`,
       { sid: { type: sql.UniqueIdentifier, value: slip.staff_id }, schoolId: { type: sql.UniqueIdentifier, value: schoolId } });
 
-    const school = await queryOne(`SELECT name, address_line1, city, state FROM schools WHERE id=@sid`,
+    const school = await queryOne(
+      `SELECT name, tagline, logo_url, watermark_url, brand_color, address_line1, address_line2, city, state, pincode
+       FROM schools WHERE id=@sid`,
       { sid: { type: sql.UniqueIdentifier, value: schoolId } });
 
     const pdfBuffer = await generatePayslipPdfBuffer({ ...slip, bank_details: bank || null }, school);
