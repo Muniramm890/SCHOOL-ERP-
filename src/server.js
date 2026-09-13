@@ -88,6 +88,7 @@ app.use(`${API}/students`,      require('./routes/students'));
 app.use(`${API}/teachers`,      require('./routes/teachers'));
 app.use(`${API}/fees`,          require('./routes/fees'));
 app.use(`${API}/payroll`,       require('./routes/payroll'));
+app.use(`${API}/arrangement`,   require('./routes/arrangement'));
 app.use('/api/payments', require('./routes/payments'));
 app.use(`${API}/results`,       require('./routes/results'));
 app.use(`${API}/timetable`,    require('./routes/timetables'));
