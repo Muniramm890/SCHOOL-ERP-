@@ -7,7 +7,7 @@ const { logAudit } = require('../utils/auditLogger');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 // Hardcode the secret for testing right now
-const secretKey = process.env.JWT_SECRET; 
+const secret = process.env.JWT_SECRET; 
 const signToken = (payload) => jwt.sign(payload, secret, { expiresIn: '24h' });
  // 👈 Direct string for testing
 
