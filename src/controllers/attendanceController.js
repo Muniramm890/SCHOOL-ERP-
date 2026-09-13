@@ -97,8 +97,11 @@ exports.markStudentAttendance = async (req, res, next) => {
           rIns.input('remarks', sql.NVarChar(255), e.remarks || null);
           rIns.input('mb', sql.UniqueIdentifier, markedBy);
           await rIns.query(
-            `INSERT INTO student_attendance (id, school_id, student_id, section_id, attendance_date, status, remarks, marked_by)
-             VALUES (NEWID(), @sid, @stid, @secid, @date, @status, @remarks, @mb)`
+            `INSERT INTO student_attendance (id, school_id, student_id, section_id, academic_year_id, attendance_date, status, remarks, marked_by)
+             SELECT NEWID(), @sid, @stid, @secid, e.academic_year_id, @date, @status, @remarks, @mb
+             FROM enrolments e
+             WHERE e.student_id = @stid AND e.section_id = @secid AND e.school_id = @sid
+               AND e.is_active = 1 AND e.deleted_at IS NULL`
           );
         }
       }

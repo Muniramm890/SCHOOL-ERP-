@@ -15,7 +15,7 @@ const authenticate = async (req, res, next) => {
     
     // 🔥 THE FIX: Yahan same fallback secret use karna zaroori hai!
     // Verification mein bhi wahi string use karein
-const secretKey = 'my_super_secret_key_2026_xyz'; 
+const secretKey = process.env.JWT_SECRET; 
 const decoded = jwt.verify(token, secretKey);
     // Fetch live user + school member record
     const member = await queryOne(

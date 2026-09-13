@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const { unauthorized } = require('../utils/response');
 const { queryOne, sql } = require('../config/db');
 
-const secretKey = 'my_super_secret_key_2026_xyz'; // Dono me same secret
+const secretKey = process.env.JWT_SECRET;
 
 const authenticateStudent = async (req, res, next) => {
   try {
