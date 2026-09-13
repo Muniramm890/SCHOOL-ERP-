@@ -191,9 +191,14 @@ exports.savePayrollRun = async (req, res, next) => {
           my: { type: sql.NVarChar(7), value: month_year }, by: { type: sql.UniqueIdentifier, value: userId }, now: { type: sql.DateTime2, value: new Date() } });
     }
 
-    let savedCount = 0;
+        let savedCount = 0;
     for (const e of entries) {
       if (!(await assertStaffBelongsToSchool(schoolId, e.staff_id))) continue; // silently skip foreign staff_id — SaaS safety
+
+      // 🔴 Guard: any manual adjustment MUST carry a reason (audit trail)
+      if (e.is_manually_adjusted && !e.adjustment_note?.trim()) {
+        return badRequest(res, `Adjustment note is required for staff ${e.staff_id} (manual override without reason).`);
+      }
 
       const existingSlip = await queryOne(`SELECT id FROM payslips WHERE school_id=@sid AND staff_id=@staffId AND month_year=@my AND deleted_at IS NULL`,
         { sid: { type: sql.UniqueIdentifier, value: schoolId }, staffId: { type: sql.UniqueIdentifier, value: e.staff_id }, my: { type: sql.NVarChar(7), value: month_year } });
@@ -203,27 +208,33 @@ exports.savePayrollRun = async (req, res, next) => {
         staffId: { type: sql.UniqueIdentifier, value: e.staff_id }, my: { type: sql.NVarChar(7), value: month_year },
         totalDays: { type: sql.Int, value: e.total_days }, present: { type: sql.Decimal(5,1), value: e.present_days },
         paidLeave: { type: sql.Decimal(5,1), value: e.paid_leave_days }, lop: { type: sql.Decimal(5,1), value: e.lop_days },
+        autoLop: { type: sql.Decimal(5,1), value: e.auto_lop_days ?? e.lop_days },
         basic: { type: sql.Decimal(10,2), value: e.basic }, hra: { type: sql.Decimal(10,2), value: e.hra },
         da: { type: sql.Decimal(10,2), value: e.da }, spl: { type: sql.Decimal(10,2), value: e.special_allowance },
         oa: { type: sql.Decimal(10,2), value: e.other_allowance }, gross: { type: sql.Decimal(10,2), value: e.gross_salary },
         lopDed: { type: sql.Decimal(10,2), value: e.lop_deduction }, pf: { type: sql.Decimal(10,2), value: e.pf_deduction },
         pt: { type: sql.Decimal(10,2), value: e.pt_deduction }, od: { type: sql.Decimal(10,2), value: e.other_deduction },
         totalDed: { type: sql.Decimal(10,2), value: e.total_deduction }, net: { type: sql.Decimal(10,2), value: e.net_pay },
+        bonus: { type: sql.Decimal(10,2), value: e.bonus_amount || 0 },
+        isAdj: { type: sql.Bit, value: e.is_manually_adjusted ? 1 : 0 },
+        adjNote: { type: sql.NVarChar(500), value: e.adjustment_note || null },
         now: { type: sql.DateTime2, value: new Date() },
       };
 
       if (existingSlip) {
         await query(`UPDATE payslips SET total_days=@totalDays, present_days=@present, paid_leave_days=@paidLeave, lop_days=@lop,
-                       basic=@basic, hra=@hra, da=@da, special_allowance=@spl, other_allowance=@oa, gross_salary=@gross,
+                       auto_lop_days=@autoLop, basic=@basic, hra=@hra, da=@da, special_allowance=@spl, other_allowance=@oa, gross_salary=@gross,
                        lop_deduction=@lopDed, pf_deduction=@pf, pt_deduction=@pt, other_deduction=@od,
-                       total_deduction=@totalDed, net_pay=@net WHERE id=@id`,
+                       total_deduction=@totalDed, net_pay=@net, bonus_amount=@bonus,
+                       is_manually_adjusted=@isAdj, adjustment_note=@adjNote WHERE id=@id`,
           { ...p, id: { type: sql.UniqueIdentifier, value: existingSlip.id } });
       } else {
         await query(`INSERT INTO payslips (id, school_id, payroll_run_id, staff_id, month_year, total_days, present_days,
-                       paid_leave_days, lop_days, basic, hra, da, special_allowance, other_allowance, gross_salary,
-                       lop_deduction, pf_deduction, pt_deduction, other_deduction, total_deduction, net_pay, payment_status, created_at)
-                     VALUES (@id, @sid, @runId, @staffId, @my, @totalDays, @present, @paidLeave, @lop, @basic, @hra, @da, @spl, @oa,
-                       @gross, @lopDed, @pf, @pt, @od, @totalDed, @net, 'PENDING', @now)`,
+                       paid_leave_days, lop_days, auto_lop_days, basic, hra, da, special_allowance, other_allowance, gross_salary,
+                       lop_deduction, pf_deduction, pt_deduction, other_deduction, total_deduction, net_pay, bonus_amount,
+                       is_manually_adjusted, adjustment_note, payment_status, created_at)
+                     VALUES (@id, @sid, @runId, @staffId, @my, @totalDays, @present, @paidLeave, @lop, @autoLop, @basic, @hra, @da, @spl, @oa,
+                       @gross, @lopDed, @pf, @pt, @od, @totalDed, @net, @bonus, @isAdj, @adjNote, 'PENDING', @now)`,
           { ...p, id: { type: sql.UniqueIdentifier, value: uuidv4() } });
       }
       savedCount++;
