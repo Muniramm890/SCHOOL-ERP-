@@ -466,24 +466,43 @@ exports.hardDeleteGrade = async (req, res, next) => {
     const { schoolId } = req.user;
     const { id } = req.params;
 
-    // चेक करें कि क्या इस क्लास के अंदर सेक्शन्स या स्टूडेंट्स मौजूद हैं
-    const activeSections = await queryOne(
-      `SELECT COUNT(*) AS total FROM sections WHERE grade_id=@gid AND school_id=@sid`,
+    // चेक करें कि क्या इस क्लास के किसी भी (kisi bhi session ke) section me STUDENTS hain — sirf section exist karna blocker nahi hai
+    const studentCount = await queryOne(
+      `SELECT COUNT(*) AS total FROM enrolments e
+       JOIN sections sc ON sc.id = e.section_id
+       WHERE sc.grade_id=@gid AND e.school_id=@sid`,
       { gid: { type: sql.UniqueIdentifier, value: id }, sid: { type: sql.UniqueIdentifier, value: schoolId } }
     );
 
-    if (activeSections && activeSections.total > 0) {
-      return badRequest(res, 'Cannot delete grade: please delete its sections first');
+    if (studentCount && studentCount.total > 0) {
+      return badRequest(res, 'Cannot delete grade: students are enrolled under it (in some session)');
     }
 
     await withTransaction(async (tx) => {
-      // 1. Grade-Subject mappings साफ़ करें
+      // 1. Is grade ke saare (empty) sections ki timetable/teacher-assignment entries saaf karo
+      const rTT = tx.request();
+      rTT.input('gid', sql.UniqueIdentifier, id);
+      rTT.input('sid', sql.UniqueIdentifier, schoolId);
+      await rTT.query(`DELETE tt FROM timetable_entries tt JOIN sections sc ON sc.id = tt.section_id WHERE sc.grade_id=@gid AND tt.school_id=@sid`);
+
+      const rTS = tx.request();
+      rTS.input('gid', sql.UniqueIdentifier, id);
+      rTS.input('sid', sql.UniqueIdentifier, schoolId);
+      await rTS.query(`DELETE ts FROM teacher_subjects ts JOIN sections sc ON sc.id = ts.section_id WHERE sc.grade_id=@gid AND ts.school_id=@sid`);
+
+      // 2. Ab (guaranteed-empty) sections khud delete karo
+      const rSec = tx.request();
+      rSec.input('gid', sql.UniqueIdentifier, id);
+      rSec.input('sid', sql.UniqueIdentifier, schoolId);
+      await rSec.query(`DELETE FROM sections WHERE grade_id=@gid AND school_id=@sid`);
+
+      // 3. Grade-Subject mappings साफ़ करें
       const rGS = tx.request();
       rGS.input('gid', sql.UniqueIdentifier, id);
       rGS.input('sid', sql.UniqueIdentifier, schoolId);
       await rGS.query(`DELETE FROM grade_subjects WHERE grade_id=@gid AND school_id=@sid`);
 
-      // 2. Grade को स्थायी रूप से हटाएँ
+      // 4. Grade को स्थायी रूप से हटाएँ
       const rG = tx.request();
       rG.input('gid', sql.UniqueIdentifier, id);
       rG.input('sid', sql.UniqueIdentifier, schoolId);
