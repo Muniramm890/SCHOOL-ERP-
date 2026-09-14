@@ -8,6 +8,7 @@ router.use(authenticate);
 router.get('/overview', ctrl.overview);
 router.get('/section-students', ctrl.getSectionStudents);
 router.post('/run', authorize('admin', 'principal', 'school_admin'), ctrl.runPromotion);
+router.post('/section-change', ctrl.changeSection);
 router.get('/history', ctrl.history);
 
 module.exports = router;

@@ -321,3 +321,41 @@ exports.getTC = async (req, res, next) => {
     return success(res, row);
   } catch (err) { next(err); }
 };
+
+
+// ── POST /api/promotion/section-change ── (same-session section transfer, no new enrolment row)
+exports.changeSection = async (req, res, next) => {
+  try {
+    const { schoolId } = req.user;
+    const { student_id, enrolment_id, to_section_id, roll_no } = req.body;
+    if (!student_id || !enrolment_id || !to_section_id) return badRequest(res, 'student_id, enrolment_id, to_section_id required');
+
+    const enr = await queryOne(
+      `SELECT id, academic_year_id FROM enrolments WHERE id=@id AND student_id=@stid AND school_id=@sid AND is_active=1`,
+      {
+        id: { type: sql.UniqueIdentifier, value: enrolment_id },
+        stid: { type: sql.UniqueIdentifier, value: student_id },
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+      }
+    );
+    if (!enr) return notFound(res, 'Active enrolment not found');
+
+    try {
+      await query(
+        `UPDATE enrolments SET section_id=@secId, roll_no=@roll, updated_at=GETUTCDATE() WHERE id=@id`,
+        {
+          secId: { type: sql.UniqueIdentifier, value: to_section_id },
+          roll: { type: sql.NVarChar, value: roll_no || null },
+          id: { type: sql.UniqueIdentifier, value: enrolment_id },
+        }
+      );
+    } catch (e) {
+      if (e.message?.includes('UQ_enrolments_section_year_rollno')) {
+        return badRequest(res, 'Is naye section me yeh roll number pehle se kisi aur student ka hai');
+      }
+      throw e;
+    }
+
+    return success(res, { message: 'Section updated' });
+  } catch (err) { next(err); }
+};

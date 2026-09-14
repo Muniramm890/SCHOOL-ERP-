@@ -308,9 +308,27 @@ exports.update = async (req, res, next) => {
         r2.input('ayId', sql.UniqueIdentifier, enrolment.academic_year_id || null);
         r2.input('roll', sql.NVarChar(50), enrolment.roll_no ? String(enrolment.roll_no).trim() : null);
         
-        await r2.query(`UPDATE enrolments SET is_active = 0, deleted_at = GETUTCDATE() WHERE student_id = @id AND school_id = @sid`);
         if (enrolment.section_id && enrolment.academic_year_id) {
-          await r2.query(`INSERT INTO enrolments (id,school_id,student_id,section_id,academic_year_id,roll_no,is_active) VALUES(NEWID(),@sid,@id,@secId,@ayId,@roll,1)`);
+          const existingRes = await r2.query(
+            `SELECT id FROM enrolments WHERE student_id=@id AND school_id=@sid AND academic_year_id=@ayId AND is_active=1`
+          );
+          if (existingRes.recordset[0]) {
+            // Same session ka edit — sirf section/roll update karo, row same rahe (promoted_from_id chain safe)
+            await r2.query(
+              `UPDATE enrolments SET section_id=@secId, roll_no=@roll, updated_at=GETUTCDATE()
+               WHERE student_id=@id AND school_id=@sid AND academic_year_id=@ayId AND is_active=1`
+            );
+          } else {
+            // Genuinely naya session — sirf CURRENT active enrolment deactivate karo (history ko haath mat lagao), nayi banao
+            await r2.query(
+              `UPDATE enrolments SET is_active=0, updated_at=GETUTCDATE()
+               WHERE student_id=@id AND school_id=@sid AND is_active=1`
+            );
+            await r2.query(
+              `INSERT INTO enrolments (id,school_id,student_id,section_id,academic_year_id,roll_no,is_active)
+               VALUES(NEWID(),@sid,@id,@secId,@ayId,@roll,1)`
+            );
+          }
         }
       }
 
