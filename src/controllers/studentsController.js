@@ -11,10 +11,13 @@ exports.list = async (req, res, next) => {
     const pageNum = parseInt(req.query.page, 10) || 1;
     const limitNum = parseInt(req.query.limit, 10) || 50;
     const offset = (pageNum - 1) * limitNum;
-    const { search, grade_id, section_id, gender, is_active, sort, id } = req.query;
+    const { search, grade_id, section_id, gender, is_active, sort, id, academic_year_id } = req.query;
 
     let where = `s.school_id = @sid AND s.deleted_at IS NULL`;
-    const params = { sid: { type: sql.UniqueIdentifier, value: schoolId } };
+    const params = {
+      sid: { type: sql.UniqueIdentifier, value: schoolId },
+      ayId: { type: sql.UniqueIdentifier, value: academic_year_id || null },
+    };
 
     if (search) {
       where += ` AND (s.first_name + ' ' + ISNULL(s.last_name, '') LIKE @search OR s.admission_no LIKE @search)`;
@@ -28,6 +31,7 @@ exports.list = async (req, res, next) => {
       where += ` AND sc.id = @section`;
       params.section = { type: sql.UniqueIdentifier, value: section_id };
     }
+    
     if (gender) {
       where += ` AND LOWER(s.gender) IN (@gender, CASE WHEN @gender='Male' THEN 'boy' ELSE 'girl' END)`;
       params.gender = { type: sql.VarChar(20), value: gender.toLowerCase() };
@@ -49,7 +53,9 @@ exports.list = async (req, res, next) => {
           SUM(CASE WHEN LOWER(s.gender) IN ('male', 'boy', 'm') THEN 1 ELSE 0 END) AS male_count,
           SUM(CASE WHEN LOWER(s.gender) IN ('female', 'girl', 'f') THEN 1 ELSE 0 END) AS female_count
        FROM students s
-       LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active = 1 AND e.deleted_at IS NULL
+       LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.deleted_at IS NULL
+  AND (@ayId IS NULL OR e.academic_year_id = @ayId)
+  AND (@ayId IS NOT NULL OR e.is_active = 1)
        LEFT JOIN sections sc ON sc.id = e.section_id AND sc.school_id = @sid
        LEFT JOIN grades g ON g.id = sc.grade_id AND g.school_id = @sid
        WHERE ${where}`, params
@@ -69,7 +75,9 @@ exports.list = async (req, res, next) => {
               sg2.relation AS g2_relation, sg2.full_name AS g2_name, sg2.phone AS g2_phone, sg2.email AS g2_email,
               sfa.status AS fee_status
        FROM students s
-       LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.is_active = 1 AND e.deleted_at IS NULL
+       LEFT JOIN enrolments e ON e.student_id = s.id AND e.school_id = @sid AND e.deleted_at IS NULL
+  AND (@ayId IS NULL OR e.academic_year_id = @ayId)
+  AND (@ayId IS NOT NULL OR e.is_active = 1)
        LEFT JOIN sections sc ON sc.id = e.section_id AND sc.school_id = @sid AND sc.deleted_at IS NULL
        LEFT JOIN grades g ON g.id = sc.grade_id AND g.school_id = @sid AND g.deleted_at IS NULL
        LEFT JOIN student_guardians sg1 ON sg1.student_id = s.id AND sg1.school_id = @sid AND sg1.is_primary = 1 AND sg1.deleted_at IS NULL
