@@ -27,7 +27,7 @@ app.use(compression());
 
 // ── CORS ──────────────────────────────────────────────────────────────
 // ── CORS ──────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.FRONTEND_URL || 'https://admin.schooloffice.tech,https://admin.schooloffice.tech/?signup=1, https://dpw5tz.csb.app,https://k5wrj7.csb.app').split(',');
+const allowedOrigins = (process.env.FRONTEND_URL || 'https://admin.schooloffice.tech,https://admin.schooloffice.tech/?signup=1,https://dpw5tz.csb.app,https://k5wrj7.csb.app').split(',');
 
 app.use(cors({
   origin: (origin, cb) => {
