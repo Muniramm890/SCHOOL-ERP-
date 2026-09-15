@@ -10,6 +10,7 @@ async function assertStaffBelongsToSchool(schoolId, staffId) {
   );
   return !!row;
 }
+//
 
 // ══════════════════════════════════════════════════
 // DRAFT — raw ingredients for a date; all gap/match logic happens on frontend
