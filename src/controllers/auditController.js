@@ -6,7 +6,7 @@ const { logAudit } = require('../utils/auditLogger');
 
 // Actions that represent routine page/API traffic, not meaningful security events.
 // Hidden from the main audit view by default (toggleable) to cut through noise.
-const NOISE_ACTIONS = ['API_CALL'];
+const NOISE_ACTIONS = ['API_CALL']; //
 
 // ── GET /api/audit ───────────────────────────────────────────────────────
 // Paginated, filtered audit trail for the Super Admin's "Audit Logs" screen.
