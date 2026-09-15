@@ -331,7 +331,7 @@ exports.changeSection = async (req, res, next) => {
     if (!student_id || !enrolment_id || !to_section_id) return badRequest(res, 'student_id, enrolment_id, to_section_id required');
 
     const enr = await queryOne(
-      `SELECT id, academic_year_id FROM enrolments WHERE id=@id AND student_id=@stid AND school_id=@sid AND is_active=1`,
+      `SELECT id, academic_year_id, section_id AS current_section_id FROM enrolments WHERE id=@id AND student_id=@stid AND school_id=@sid AND is_active=1`,
       {
         id: { type: sql.UniqueIdentifier, value: enrolment_id },
         stid: { type: sql.UniqueIdentifier, value: student_id },
@@ -339,6 +339,22 @@ exports.changeSection = async (req, res, next) => {
       }
     );
     if (!enr) return notFound(res, 'Active enrolment not found');
+
+    const toSec = await queryOne(
+      `SELECT sec.id, sec.grade_id, sec.academic_year_id FROM sections sec WHERE sec.id=@id AND sec.school_id=@sid AND sec.deleted_at IS NULL`,
+      {
+        id: { type: sql.UniqueIdentifier, value: to_section_id },
+        sid: { type: sql.UniqueIdentifier, value: schoolId },
+      }
+    );
+    if (!toSec) return notFound(res, 'Target section not found');
+    if (toSec.academic_year_id !== enr.academic_year_id) return badRequest(res, 'Target section isi session ka nahi hai');
+
+    const curSec = await queryOne(
+      `SELECT grade_id FROM sections WHERE id=@id`,
+      { id: { type: sql.UniqueIdentifier, value: enr.current_section_id } }
+    );
+    if (curSec && toSec.grade_id !== curSec.grade_id) return badRequest(res, 'Section transfer sirf same grade ke andar allowed hai');
 
     try {
       await query(
