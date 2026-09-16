@@ -47,7 +47,8 @@ const blobServiceClient = BlobServiceClient.fromConnectionString(connectionStrin
 // ── Container registry — one BlobServiceClient, multiple logical containers ──
 const CONTAINERS = {
   homework: 'homeworksschooloffice',
-  payslips: 'payslipsschooloffice', // 🔴 create this container in Azure Portal first (Private access)
+  payslips: 'payslipsschooloffice', 
+  commAttachments: 'commattachmentsschooloffice',
 };
 const getContainerClient = (containerKey) => blobServiceClient.getContainerClient(CONTAINERS[containerKey]);
 
@@ -116,4 +117,17 @@ const getSignedDownloadUrl = (blobPath, expiryMinutes = 60, containerKey = 'home
   }
 };
 
-module.exports = { uploadImageBuffer, uploadBufferToAzure, uploadRawBuffer, uploadPayslipPdf, safeName, deleteBlobFromAzure, getSignedDownloadUrl };
+// 🔴 Communication Hub attachments — school-wise organized: commAttachments/{schoolId}/{messageFolder}/{filename}
+const uploadCommAttachment = async (buffer, { schoolId, fileName, ext }) => {
+  try {
+    const client = getContainerClient('commAttachments');
+    const blobPath = `comm/${schoolId}/${Date.now()}_${safeName(fileName)}${ext}`;
+    const blockBlobClient = client.getBlockBlobClient(blobPath);
+    await blockBlobClient.upload(buffer, buffer.length);
+    return { secure_url: blockBlobClient.url, public_id: blobPath };
+  } catch (error) {
+    throw new Error(`Azure Comm Attachment Upload Failed: ${error.message}`);
+  }
+};
+
+module.exports = { uploadImageBuffer, uploadBufferToAzure, uploadRawBuffer, uploadPayslipPdf, uploadCommAttachment, safeName, deleteBlobFromAzure, getSignedDownloadUrl };
