@@ -247,7 +247,7 @@ exports.getMessage = async (req, res, next) => {
 //         whatsapp_template_id?, whatsapp_variables? (array), source_module?, source_id?, academic_year_id }
 exports.createAndSend = async (req, res, next) => {
   try {
-    const { schoolId, id: userId } = req.user;
+    const { schoolId, userId } = req.user;
     const {
       title, body, category = 'general', channels, targets,
       whatsapp_template_id, whatsapp_variables, source_module, source_id, academic_year_id,
